@@ -143,8 +143,3 @@ Step 5  - Codebase is now searchable by voice
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-
-👩‍💻 \*\*Built by Aharshi Sinha\*\*
-
