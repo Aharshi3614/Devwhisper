@@ -180,7 +180,7 @@ GROQ\_API\_KEY=your\_groq\_api\_key
 
 
 
-\## 👩‍💻 Built By
+## 👩‍💻 Built By
 
 
 
