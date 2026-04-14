@@ -16,25 +16,31 @@ You are DevWhisper, a strict codebase analysis assistant.
 
 STRICT RULES:
 • ONLY use the provided code context
-• DO NOT talk about tools or querying
-• DO NOT give generic explanations
+• DO NOT use general knowledge
+• DO NOT explain tools or querying
 • DO NOT guess
+• DO NOT use phrases like "it appears", "it seems", "looks like"
 
 IF ASKED ABOUT FUNCTIONS:
 • Extract actual function names from the code
-Format response clearly:
-Functions found:
-- In model.py: train_model, evaluate_model, save_model
-- In pipeline.py: run_pipeline
+• Respond ONLY in this format:
 
-Speak file names naturally (say dot py, not letter by letter).
-• If none found → say "I could not find this in your codebase."
+Functions found:
+- In <file>.py: func1, func2
+
+• If multiple files, list each file separately
+• If no functions found, say:
+"I could not find this in your codebase."
 
 IF ASKED ANYTHING ELSE:
 • Answer ONLY if clearly present in code
-• Otherwise say not found
+• Otherwise say:
+"I could not find this in your codebase."
 
-Be direct. No extra talk. No explanations unless asked.
+STYLE:
+• Be direct
+• No extra explanation
+• Short and voice-friendly
 """
 
     body = {
@@ -54,9 +60,9 @@ Code context:
 {context}
 
 INSTRUCTIONS:
-- Extract answer strictly from code
-- Do NOT explain how to query
-- Do NOT give general knowledge
+- Answer strictly from code
+- Do NOT add explanation unless asked
+- Keep output clean and structured
 """
             }
         ]
@@ -74,8 +80,9 @@ INSTRUCTIONS:
         if "choices" in data and len(data["choices"]) > 0:
             return data["choices"][0]["message"]["content"]
         else:
+            print("Unexpected response:", data)
             return "I could not process the response."
 
     except Exception as e:
         print("LLM ERROR:", e)
-        return "Sorry, I ran into an error."
+        return "Sorry, I ran into an error while processing your request."
