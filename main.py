@@ -5,34 +5,48 @@ from llm import generate_response
 
 app = FastAPI()
 
+# 🔥 Simple memory (last 5 interactions)
+conversation_history = []
+
+
 @app.on_event("startup")
 async def startup_event():
     embedder.encode("warmup query")
     print("Embedder warmed up and ready!")
 
+
+def update_memory(user, assistant):
+    global conversation_history
+    conversation_history.append(f"User: {user}\nAssistant: {assistant}")
+    if len(conversation_history) > 5:
+        conversation_history.pop(0)
+
+
+def get_memory():
+    return "\n\n".join(conversation_history)
+
+
 @app.post("/webhook")
 async def vapi_webhook(request: Request):
     body = await request.json()
-    print("Incoming body:", body)
     message = body.get("message", {})
     msg_type = message.get("type", "")
 
     if msg_type == "assistant-request":
         return JSONResponse({
             "assistant": {
-                "firstMessage": "Hey, DevWhisper here. Tell me what you are working on or what error you are seeing.",
+                "firstMessage": "Hey, DevWhisper here. What are you building or debugging?",
                 "model": {
                     "provider": "openai",
                     "model": "gpt-4o",
                     "functions": [{
                         "name": "query_codebase",
-                        "description": "Search the developer codebase to explain code, find functions, or debug errors.",
+                        "description": "Search and explain code or debug errors",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "query": {
-                                    "type": "string",
-                                    "description": "The developer spoken question or error"
+                                    "type": "string"
                                 }
                             },
                             "required": ["query"]
@@ -43,42 +57,43 @@ async def vapi_webhook(request: Request):
             }
         })
 
-    if msg_type == "function-call":
-        fn = message.get("functionCall", {})
-        fn_name = fn.get("name", "")
-        params = fn.get("parameters", {})
-        print(f"Function called: {fn_name}, params: {params}")
-        if fn_name == "query_codebase":
-            query = params.get("query", "")
-            print(f"Query: {query}")
-            context = retrieve(query)
-            print(f"Context retrieved: {context[:200]}")
-            answer = generate_response(query, context)
-            print(f"Answer: {answer}")
-            return JSONResponse({"result": answer})
+    if msg_type in ["function-call", "tool-calls"]:
+        tools = []
 
-    if msg_type == "tool-calls":
-        tool_calls = message.get("toolCalls", [])
+        if msg_type == "function-call":
+            tools = [{
+                "id": "single",
+                "function": message.get("functionCall", {})
+            }]
+        else:
+            tools = message.get("toolCalls", [])
+
         results = []
-        for tool in tool_calls:
+
+        for tool in tools:
             fn = tool.get("function", {})
             fn_name = fn.get("name", "")
-            params = fn.get("arguments", {})
-            print(f"Tool called: {fn_name}, params: {params}")
+            params = fn.get("arguments", {}) or fn.get("parameters", {})
+
             if fn_name == "query_codebase":
                 query = params.get("query", "")
-                print(f"Query: {query}")
+
                 context = retrieve(query)
-                print(f"Context: {context[:200]}")
-                answer = generate_response(query, context)
-                print(f"Answer: {answer}")
+                history = get_memory()
+
+                answer = generate_response(query, context, history)
+
+                update_memory(query, answer)
+
                 results.append({
-                    "toolCallId": tool.get("id", ""),
+                    "toolCallId": tool.get("id", "single"),
                     "result": answer
                 })
+
         return JSONResponse({"results": results})
 
     return JSONResponse({"status": "ok"})
+
 
 @app.get("/health")
 def health():
