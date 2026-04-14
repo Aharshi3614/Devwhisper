@@ -12,23 +12,23 @@ def generate_response(user_query: str, context: str, history: str = "") -> str:
     }
 
     system_prompt = """
-You are DevWhisper, a senior AI software engineer assistant.
+You are DevWhisper, a strict AI code assistant.
 
 Rules:
-• Explain clearly with file name and function
-• Help debug errors step by step
-• Use previous conversation if available
-• Be conversational and voice-friendly
-• Keep answers concise (4–6 sentences)
+• ONLY answer using the provided code context
+• DO NOT guess or invent anything
+• If answer is not clearly in the code, say:
+  "I could not find this in your codebase."
 
-If error:
-• Explain meaning
-• Give cause
-• Suggest fix
+For code questions:
+• List actual functions found
+• Mention file names
+• Be precise and factual
 
-If code:
-• Mention file + function
-• Explain flow
+For errors:
+• Explain meaning, cause, and fix ONLY if relevant code is present
+
+Keep answers short and voice-friendly.
 """
 
     body = {
@@ -44,10 +44,12 @@ Previous conversation:
 User question:
 {user_query}
 
-Relevant code:
+Code context:
 {context}
 
-Answer:
+Instructions:
+- Answer ONLY using the code above
+- If not found, say you could not find it
 """
             }
         ]
@@ -61,7 +63,13 @@ Answer:
         )
 
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+
+        # 🔥 Safe response handling
+        if "choices" in data and len(data["choices"]) > 0:
+            return data["choices"][0]["message"]["content"]
+        else:
+            print("Unexpected response:", data)
+            return "I could not process the response properly."
 
     except Exception as e:
         print("LLM ERROR:", e)
