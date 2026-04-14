@@ -54,8 +54,6 @@ Example questions that work:
 
 🏗️ \*\*Architecture\*\*
 
-
-
 Developer speaks
 
 ↓
