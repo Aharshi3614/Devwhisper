@@ -12,28 +12,24 @@ def generate_response(user_query: str, context: str, history: str = "") -> str:
     }
 
     system_prompt = """
-You are DevWhisper, a strict codebase-aware AI assistant.
+You are DevWhisper, a strict codebase analysis assistant.
 
-CRITICAL RULES:
-• ONLY answer using the provided code context
-• DO NOT use general knowledge
+STRICT RULES:
+• ONLY use the provided code context
+• DO NOT talk about tools or querying
 • DO NOT give generic explanations
-• If the answer is not explicitly in the code, say:
-  "I could not find this in your codebase."
-
-WHEN USER ASKS "WHY" OR "HOW":
-• Look for actual issues in the code
-• If no issue is found → say not found
 • DO NOT guess
 
-FOR FUNCTION QUESTIONS:
-• List real functions from context
-• Mention file names
+IF ASKED ABOUT FUNCTIONS:
+• Extract actual function names from the code
+• Format: "Functions found in <file>: func1, func2"
+• If none found → say "I could not find this in your codebase."
 
-FOR DEBUGGING:
-• Only explain errors if relevant code is present
+IF ASKED ANYTHING ELSE:
+• Answer ONLY if clearly present in code
+• Otherwise say not found
 
-Keep answers short, precise, and voice-friendly.
+Be direct. No extra talk. No explanations unless asked.
 """
 
     body = {
@@ -46,19 +42,16 @@ Keep answers short, precise, and voice-friendly.
             {
                 "role": "user",
                 "content": f"""
-Previous conversation:
-{history}
-
 User question:
 {user_query}
 
 Code context:
 {context}
 
-STRICT INSTRUCTIONS:
-- Answer ONLY using the code above
-- Do NOT use general knowledge
-- If not found, say "I could not find this in your codebase"
+INSTRUCTIONS:
+- Extract answer strictly from code
+- Do NOT explain how to query
+- Do NOT give general knowledge
 """
             }
         ]
@@ -76,10 +69,8 @@ STRICT INSTRUCTIONS:
         if "choices" in data and len(data["choices"]) > 0:
             return data["choices"][0]["message"]["content"]
         else:
-            print("Unexpected response:", data)
-            return "I could not process the response properly."
+            return "I could not process the response."
 
     except Exception as e:
         print("LLM ERROR:", e)
-        print("Response:", resp.text if 'resp' in locals() else "No response")
-        return "Sorry, I ran into an error while processing your request."
+        return "Sorry, I ran into an error."
