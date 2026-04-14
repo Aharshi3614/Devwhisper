@@ -1,4 +1,4 @@
-\# DevWhisper
+🎙️ DevWhisper
 
 
 
@@ -6,13 +6,7 @@ DevWhisper is a voice-first AI agent built for developers. Instead of stopping t
 
 
 
-Built for the hackathon track: Voice-Native Developer Experience Agent.
-
-
-
-
-
-\## The problem
+🚨 The problem
 
 
 
@@ -26,15 +20,15 @@ DevWhisper lets you stay in flow. Ask a question with your voice, get an answer 
 
 
 
-\## What it does
+✨ What it does
 
 
 
-\- You speak a question about your code
+🎤 You ask a question about your code
 
-\- It searches your actual codebase semantically
+🔍 It searches your actual codebase semantically
 
-\- It responds in plain spoken English, like a senior dev sitting next to you
+🔊 It responds in plain spoken English, like a senior dev sitting next to you
 
 
 
@@ -48,25 +42,59 @@ Example questions that work:
 
 
 
+🏗️ Architecture
+
+
+
+```mermaid
+
+flowchart TD
+
+&#x20;   A\[🎤 Developer speaks a question] --> B\[Vapi\\nSpeech to Text]
+
+&#x20;   B --> C\[FastAPI Webhook Server\\nmain.py]
+
+&#x20;   C --> D\[Retriever\\nretriever.py]
+
+&#x20;   D --> E\[Qdrant Vector DB\\nSemantic Code Search]
+
+&#x20;   E --> D
+
+&#x20;   D --> C
+
+&#x20;   C --> F\[LLM Layer\\nllm.py]
+
+&#x20;   F --> G\[Groq API\\nLLaMA 3.3 70B]
+
+&#x20;   G --> F
+
+&#x20;   F --> C
+
+&#x20;   C --> B
+
+&#x20;   B --> H\[🔊 Vapi speaks the answer back]
+
+```
+
 
 
 \## Tech stack
 
 
 
-\- Vapi — handles voice input and output
+🛠️ Vapi — handles voice input and output
 
-\- Qdrant — stores and searches code as vectors
+🗄️ Qdrant — stores and searches code as vectors
 
-\- Groq with LLaMA 3.3 70B — generates the response
+🤖 Groq with LLaMA 3.3 70B — generates the response
 
-\- FastAPI — receives webhooks from Vapi and orchestrates everything
-
-
+⚡ FastAPI — receives webhooks from Vapi and orchestrates everything
 
 
 
-\## How to run it
+
+
+🚀 How to run it
 
 
 
@@ -126,7 +154,7 @@ ngrok http 8000
 
 
 
-\## Project structure
+📁 Project structure
 
 
 
@@ -146,7 +174,7 @@ sample\_codebase/ — put your own Python project files here
 
 
 
-\## Notes
+⚠️ Notes
 
 
 
