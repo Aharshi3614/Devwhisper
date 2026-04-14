@@ -12,29 +12,37 @@ def generate_response(user_query: str, context: str, history: str = "") -> str:
     }
 
     system_prompt = """
-You are DevWhisper, a strict AI code assistant.
+You are DevWhisper, a strict codebase-aware AI assistant.
 
-Rules:
+CRITICAL RULES:
 • ONLY answer using the provided code context
-• DO NOT guess or invent anything
-• If answer is not clearly in the code, say:
+• DO NOT use general knowledge
+• DO NOT give generic explanations
+• If the answer is not explicitly in the code, say:
   "I could not find this in your codebase."
 
-For code questions:
-• List actual functions found
+WHEN USER ASKS "WHY" OR "HOW":
+• Look for actual issues in the code
+• If no issue is found → say not found
+• DO NOT guess
+
+FOR FUNCTION QUESTIONS:
+• List real functions from context
 • Mention file names
-• Be precise and factual
 
-For errors:
-• Explain meaning, cause, and fix ONLY if relevant code is present
+FOR DEBUGGING:
+• Only explain errors if relevant code is present
 
-Keep answers short and voice-friendly.
+Keep answers short, precise, and voice-friendly.
 """
 
     body = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {
+                "role": "system",
+                "content": system_prompt
+            },
             {
                 "role": "user",
                 "content": f"""
@@ -47,9 +55,10 @@ User question:
 Code context:
 {context}
 
-Instructions:
+STRICT INSTRUCTIONS:
 - Answer ONLY using the code above
-- If not found, say you could not find it
+- Do NOT use general knowledge
+- If not found, say "I could not find this in your codebase"
 """
             }
         ]
@@ -64,7 +73,6 @@ Instructions:
 
         data = resp.json()
 
-        # 🔥 Safe response handling
         if "choices" in data and len(data["choices"]) > 0:
             return data["choices"][0]["message"]["content"]
         else:
@@ -74,4 +82,4 @@ Instructions:
     except Exception as e:
         print("LLM ERROR:", e)
         print("Response:", resp.text if 'resp' in locals() else "No response")
-        return "Sorry, I ran into an error while processing your request."
+        return "Sorry, I ran into an error while processing your request."your request."
