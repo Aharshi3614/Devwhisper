@@ -82,4 +82,4 @@ STRICT INSTRUCTIONS:
     except Exception as e:
         print("LLM ERROR:", e)
         print("Response:", resp.text if 'resp' in locals() else "No response")
-        return "Sorry, I ran into an error while processing your request."your request."
+        return "Sorry, I ran into an error while processing your request."
