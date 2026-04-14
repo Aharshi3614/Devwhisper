@@ -97,6 +97,7 @@ async def vapi_webhook(request: Request):
                     query = params.get("query", "")
 
                     context = retrieve(query)
+                    print("CONTEXT:", context)
                     history = get_memory()
 
                     answer = generate_response(query, context, history)
