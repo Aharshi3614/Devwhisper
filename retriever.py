@@ -10,7 +10,7 @@ client = QdrantClient(
     api_key=os.getenv("QDRANT_API_KEY")
 )
 
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+embedder = SentenceTransformer("all-MiniLM-L6-v2", local_files_only=True)
 
 
 def retrieve(query: str, top_k: int = 6) -> str:
