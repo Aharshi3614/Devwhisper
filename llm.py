@@ -1,7 +1,9 @@
-import os, requests
+import os
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 def generate_response(user_query: str, context: str, history: str = "") -> str:
     headers = {
@@ -12,21 +14,21 @@ def generate_response(user_query: str, context: str, history: str = "") -> str:
     system_prompt = """
 You are DevWhisper, a senior AI software engineer assistant.
 
-Your job:
-• Explain code clearly with file name and function
+Rules:
+• Explain clearly with file name and function
 • Help debug errors step by step
-• Use previous conversation context if available
-• Be conversational and natural (voice-friendly)
-• Keep answers concise but informative (4–6 sentences max)
+• Use previous conversation if available
+• Be conversational and voice-friendly
+• Keep answers concise (4–6 sentences)
 
-If error is given:
-• Explain what it means
-• Give likely causes
-• Suggest fixes
+If error:
+• Explain meaning
+• Give cause
+• Suggest fix
 
-If code question:
+If code:
 • Mention file + function
-• Explain how it works
+• Explain flow
 """
 
     body = {
@@ -45,16 +47,23 @@ User question:
 Relevant code:
 {context}
 
-Answer clearly:
+Answer:
 """
             }
         ]
     }
 
-    resp = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers=headers,
-        json=body
-    )
+    try:
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=body
+        )
 
-    return resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        print("LLM ERROR:", e)
+        print("Response:", resp.text if 'resp' in locals() else "No response")
+        return "Sorry, I ran into an error while processing your request."

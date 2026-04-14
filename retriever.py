@@ -25,17 +25,17 @@ def retrieve(query: str, top_k: int = 6) -> str:
     structured_context = []
 
     for i, r in enumerate(results):
-        payload = r.payload
+        payload = r.payload or {}
 
         file = payload.get("file", "unknown")
-        line = payload.get("start_line", "?")
+        start_line = payload.get("start_line", "?")
         code = payload.get("text", "")
 
         # Extract function name
         function_name = "unknown"
-        for line_text in code.split("\n"):
-            if line_text.strip().startswith("def "):
-                function_name = line_text.strip().split("(")[0].replace("def ", "")
+        for line in code.split("\n"):
+            if line.strip().startswith("def "):
+                function_name = line.strip().split("(")[0].replace("def ", "")
                 break
 
         structured_context.append(
@@ -43,7 +43,7 @@ def retrieve(query: str, top_k: int = 6) -> str:
 Result {i+1}:
 File: {file}
 Function: {function_name}
-Start Line: {line}
+Start Line: {start_line}
 
 Code:
 {code}
