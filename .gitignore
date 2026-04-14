@@ -1,3 +1,6 @@
+*.XLS
+*.xlsx
+.ReadME
 .env
 __pycache__/
 *.pyc

@@ -46,35 +46,37 @@ Example questions that work:
 
 
 
-```mermaid
+Developer speaks
 
-flowchart TD
+&#x20;     ↓
 
-&#x20;   A\[🎤 Developer speaks a question] --> B\[Vapi\\nSpeech to Text]
+&#x20;  Vapi (Speech to Text)
 
-&#x20;   B --> C\[FastAPI Webhook Server\\nmain.py]
+&#x20;     ↓
 
-&#x20;   C --> D\[Retriever\\nretriever.py]
+&#x20;  FastAPI Webhook Server
 
-&#x20;   D --> E\[Qdrant Vector DB\\nSemantic Code Search]
+&#x20;     ↓
 
-&#x20;   E --> D
+&#x20;  Qdrant Vector Search
 
-&#x20;   D --> C
+&#x20;     ↓
 
-&#x20;   C --> F\[LLM Layer\\nllm.py]
+&#x20;  Groq LLaMA 3.3 70B
 
-&#x20;   F --> G\[Groq API\\nLLaMA 3.3 70B]
+&#x20;     ↓
 
-&#x20;   G --> F
+&#x20;  FastAPI sends answer back
 
-&#x20;   F --> C
+&#x20;     ↓
 
-&#x20;   C --> B
+&#x20;  Vapi speaks the answer
 
-&#x20;   B --> H\[🔊 Vapi speaks the answer back]
+&#x20;     ↓
 
-```
+Developer hears the response
+
+
 
 
 
@@ -89,6 +91,8 @@ flowchart TD
 🤖 Groq with LLaMA 3.3 70B — generates the response
 
 ⚡ FastAPI — receives webhooks from Vapi and orchestrates everything
+
+
 
 
 
