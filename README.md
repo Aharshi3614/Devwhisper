@@ -1,4 +1,4 @@
-🎙️ DevWhisper
+🎙️ \*\*DevWhisper — Voice-Native Developer Experience Agent\*\*
 
 
 
@@ -6,7 +6,11 @@ DevWhisper is a voice-first AI agent built for developers. Instead of stopping t
 
 
 
-🚨 The problem
+\---
+
+
+
+🚨 \*\*The Problem\*\*
 
 
 
@@ -18,9 +22,11 @@ DevWhisper lets you stay in flow. Ask a question with your voice, get an answer 
 
 
 
+\---
 
 
-✨ What it does
+
+✨ \*\*What It Does\*\*
 
 
 
@@ -42,49 +48,55 @@ Example questions that work:
 
 
 
-🏗️ Architecture
+\---
+
+
+
+🏗️ \*\*Architecture\*\*
 
 
 
 Developer speaks
 
-&#x20;     ↓
+↓
 
-&#x20;  Vapi (Speech to Text)
+Vapi — Speech to Text
 
-&#x20;     ↓
+↓
 
-&#x20;  FastAPI Webhook Server
+FastAPI Webhook Server
 
-&#x20;     ↓
+↓
 
-&#x20;  Qdrant Vector Search
+Qdrant Vector Search
 
-&#x20;     ↓
+↓
 
-&#x20;  Groq LLaMA 3.3 70B
+Groq LLaMA 3.3 70B
 
-&#x20;     ↓
+↓
 
-&#x20;  FastAPI sends answer back
+FastAPI sends answer back
 
-&#x20;     ↓
+↓
 
-&#x20;  Vapi speaks the answer
+Vapi — Text to Speech
 
-&#x20;     ↓
+↓
 
 Developer hears the response
 
 
 
-
-
-\## Tech stack
+\---
 
 
 
-🛠️ Vapi — handles voice input and output
+🛠️ \*\*Tech Stack\*\*
+
+
+
+🎙️ Vapi — handles voice input and output
 
 🗄️ Qdrant — stores and searches code as vectors
 
@@ -94,23 +106,17 @@ Developer hears the response
 
 
 
+\---
 
 
 
-
-🚀 How to run it
+🚀 \*\*How To Run It\*\*
 
 
 
 1\. Clone this repo
 
-2\. Install dependencies
-
-
-
-pip install -r requirements.txt
-
-
+2\. Install dependencies: pip install -r requirements.txt
 
 3\. Create a .env file in the root folder
 
@@ -126,39 +132,21 @@ GROQ\_API\_KEY=your\_groq\_api\_key
 
 4\. Add your Python files to the sample\_codebase folder
 
+5\. Index your codebase: python indexer.py
 
+6\. Start the server: uvicorn main:app --reload --port 8000
 
-5\. Index your codebase into Qdrant
+7\. Expose publicly: ngrok http 8000
 
-
-
-python indexer.py
-
-
-
-6\. Start the backend server
+8\. Update Vapi tool Server URL with your ngrok URL plus /webhook
 
 
 
-uvicorn main:app --reload --port 8000
+\---
 
 
 
-7\. Expose it publicly using ngrok
-
-
-
-ngrok http 8000
-
-
-
-8\. In your Vapi dashboard, set the tool Server URL to your ngrok URL plus /webhook
-
-
-
-
-
-📁 Project structure
+📁 \*\*Project Structure\*\*
 
 
 
@@ -178,13 +166,21 @@ sample\_codebase/ — put your own Python project files here
 
 
 
-⚠️ Notes
+⚠️ \*\*Notes\*\*
 
 
 
 The ngrok URL changes every time you restart it. Remember to update the Server URL in your Vapi tool settings each time.
 
-
-
 The .env file is not included in this repo for security. You need to create your own with the keys above.
+
+
+
+\---
+
+
+
+👩‍💻 \*\*Built By Aharshi Sinha.
+
+
 
