@@ -1,4 +1,4 @@
-🎙️ \*\*DevWhisper — Voice-Native Developer Experience Agent\*\*
+\# 🎙️ DevWhisper — Voice-Native Developer Experience Agent
 
 
 
@@ -10,7 +10,7 @@ DevWhisper is a voice-first AI agent built for developers. Instead of stopping t
 
 
 
-🚨 \*\*The Problem\*\*
+\## 🚨 The Problem
 
 
 
@@ -26,7 +26,7 @@ DevWhisper lets you stay in flow. Ask a question with your voice, get an answer 
 
 
 
-✨ \*\*What It Does\*\*
+\## ✨ What It Does
 
 
 
@@ -52,7 +52,9 @@ Example questions that work:
 
 
 
-🏗️ \*\*Architecture\*\*
+\## 🏗️ Architecture
+
+
 
 Developer speaks
 
@@ -90,17 +92,17 @@ Developer hears the response
 
 
 
-🛠️ \*\*Tech Stack\*\*
+\## 🛠️ Tech Stack
 
 
 
-🎙️ Vapi — handles voice input and output
+\- 🎙️ Vapi — handles voice input and output
 
-🗄️ Qdrant — stores and searches code as vectors
+\- 🗄️ Qdrant — stores and searches code as vectors
 
-🤖 Groq with LLaMA 3.3 70B — generates the response
+\- 🤖 Groq with LLaMA 3.3 70B — generates the response
 
-⚡ FastAPI — receives webhooks from Vapi and orchestrates everything
+\- ⚡ FastAPI — receives webhooks from Vapi and orchestrates everything
 
 
 
@@ -108,15 +110,15 @@ Developer hears the response
 
 
 
-🚀 \*\*How To Run It\*\*
+\## 🚀 How To Run It
 
 
 
 1\. Clone this repo
 
-2\. Install dependencies: pip install -r requirements.txt
+2\. Install dependencies: `pip install -r requirements.txt`
 
-3\. Create a .env file in the root folder
+3\. Create a `.env` file in the root folder:
 
 
 
@@ -128,35 +130,15 @@ GROQ\_API\_KEY=your\_groq\_api\_key
 
 
 
-4\. Add your Python files to the sample\_codebase folder
+4\. Add your Python files to the `sample\_codebase` folder
 
-5\. Index your codebase: python indexer.py
+5\. Index your codebase: `python indexer.py`
 
-6\. Start the server: uvicorn main:app --reload --port 8000
+6\. Start the server: `uvicorn main:app --reload --port 8000`
 
-7\. Expose publicly: ngrok http 8000
+7\. Expose publicly: `ngrok http 8000`
 
-8\. Update Vapi tool Server URL with your ngrok URL plus /webhook
-
-
-
-\---
-
-
-
-📁 \*\*Project Structure\*\*
-
-
-
-main.py — FastAPI webhook server, handles all Vapi events
-
-indexer.py — chunks your code files and uploads them to Qdrant
-
-retriever.py — takes a query and finds the most relevant code chunks
-
-llm.py — sends the query and context to Groq and returns the answer
-
-sample\_codebase/ — put your own Python project files here
+8\. Update Vapi tool Server URL with your ngrok URL plus `/webhook`
 
 
 
@@ -164,13 +146,19 @@ sample\_codebase/ — put your own Python project files here
 
 
 
-⚠️ \*\*Notes\*\*
+\## 📁 Project Structure
 
 
 
-The ngrok URL changes every time you restart it. Remember to update the Server URL in your Vapi tool settings each time.
+\- `main.py` — FastAPI webhook server, handles all Vapi events
 
-The .env file is not included in this repo for security. You need to create your own with the keys above.
+\- `indexer.py` — chunks your code files and uploads them to Qdrant
+
+\- `retriever.py` — takes a query and finds the most relevant code chunks
+
+\- `llm.py` — sends the query and context to Groq and returns the answer
+
+\- `sample\_codebase/` — put your own Python project files here
 
 
 
@@ -178,7 +166,23 @@ The .env file is not included in this repo for security. You need to create your
 
 
 
-👩‍💻 \*\*Built By Aharshi Sinha.
+\## ⚠️ Notes
 
 
+
+\- The ngrok URL changes every time you restart it. Remember to update the Server URL in your Vapi tool settings each time.
+
+\- The `.env` file is not included in this repo for security. You need to create your own with the keys above.
+
+
+
+\---
+
+
+
+\## 👩‍💻 Built By
+
+
+
+Aharshi Sinha — CSE AIML
 
