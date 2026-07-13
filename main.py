@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from retriever import retrieve, embedder
 from llm import generate_response
+from handlers.explain_function import matches as explain_matches, explain_function, format_tool_call
 import json
 
 app = FastAPI()
@@ -92,6 +93,10 @@ async def vapi_webhook(request: Request):
                     except:
                         params = {}
 
+                # 🔹 Hoist the query string out of the params so every
+                # handler below can use it (not just query_codebase).
+                query = params.get("query", "") if isinstance(params, dict) else ""
+
                 if fn_name == "query_codebase":
                     query = params.get("query", "")
 
@@ -107,6 +112,13 @@ async def vapi_webhook(request: Request):
                         "toolCallId": tool.get("id", "single"),
                         "result": answer
                     })
+                    continue
+
+                # 🔹 explain_function handler — single-line dispatch
+                if explain_matches(query):
+                    explanation = explain_function(query)
+                    results.append(format_tool_call(tool.get("id", "single"), explanation))
+                    continue
 
             return JSONResponse({"results": results})
 
