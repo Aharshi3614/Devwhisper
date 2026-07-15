@@ -53,6 +53,9 @@ STYLE:
             {
                 "role": "user",
                 "content": f"""
+Conversation history:
+{history if history else "No prior conversation."}
+
 User question:
 {user_query}
 
