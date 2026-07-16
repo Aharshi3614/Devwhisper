@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from retriever import retrieve, embedder
+from retriever import retrieve, embedder, client as qdrant_client
 from llm import generate_response
 from cache import get as cache_get, put as cache_put
 import json
@@ -19,6 +19,16 @@ MAX_HISTORY_PER_SESSION = 5
 async def startup_event():
     embedder.encode("warmup query")
     print("Embedder warmed up and ready!")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("Shutting down DevWhisper server...")
+    try:
+        qdrant_client.close()
+        print("Qdrant client connection closed successfully.")
+    except Exception as e:
+        print(f"Error during Qdrant client connection cleanup: {e}")
 
 
 def _get_session_id(message: dict) -> str:
