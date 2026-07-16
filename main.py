@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from retriever import retrieve, embedder, client as qdrant_client
 from llm import generate_response
 from cache import get as cache_get, put as cache_put
@@ -7,6 +8,8 @@ import json
 import time
 
 app = FastAPI()
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- Per-session memory store ---
 # { session_id: {"history": [...], "last_used": <timestamp>} }
@@ -204,4 +207,4 @@ async def vapi_webhook(request: Request):
 
 @app.get("/health")
 def health():
-    return {"status": "DevWhisper is running"}
+    return {"status": "ok", "message": "DevWhisper is running"}
