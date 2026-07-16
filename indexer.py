@@ -9,6 +9,7 @@ load_dotenv()
 client = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 COLLECTION = "devwhisper"
+SUPPORTED_EXTENSIONS = {".py"}
 
 def create_collection():
     try:
@@ -39,7 +40,7 @@ def index_directory(directory):
     points = []
     for root, _, files in os.walk(directory):
         for file in files:
-            if file.endswith(".py"):
+            if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
                 path = os.path.join(root, file)
                 chunks = chunk_file(path)
                 print(f"  {file} → {len(chunks)} chunks")
