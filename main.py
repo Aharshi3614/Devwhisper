@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from retriever import retrieve, embedder
 from llm import generate_response
 from cache import get as cache_get, put as cache_put
+from handlers import route_command
 import json
 import time
 
@@ -164,7 +165,7 @@ async def vapi_webhook(request: Request):
                     # --- Cache miss: run full pipeline ---
                     context = retrieve(query)
                     history = get_memory(session_id)
-                    answer = generate_response(query, context, history)
+                    answer = route_command(query, session_id) or generate_response(query, context, history)
 
                     # --- Cache insertion ---
                     # Only cache successful, non-empty responses.
