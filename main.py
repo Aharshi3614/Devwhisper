@@ -3,11 +3,15 @@ from fastapi.responses import JSONResponse
 from retriever import retrieve, embedder
 from llm import generate_response
 import json
+import time
 
 app = FastAPI()
 
-# Memory store
-conversation_history = []
+# --- Per-session memory store ---
+# { session_id: {"history": [...], "last_used": <timestamp>} }
+conversation_sessions = {}
+MAX_SESSIONS = 100
+MAX_HISTORY_PER_SESSION = 5
 
 
 @app.on_event("startup")
@@ -16,14 +20,46 @@ async def startup_event():
     print("Embedder warmed up and ready!")
 
 
-def update_memory(user, assistant):
-    conversation_history.append(f"User: {user}\nAssistant: {assistant}")
-    if len(conversation_history) > 5:
-        conversation_history.pop(0)
+def _get_session_id(message: dict) -> str:
+    """Extract a session/call ID from the Vapi payload, with fallbacks."""
+    call = message.get("call", {})
+    if isinstance(call, dict) and call.get("id"):
+        return call["id"]
+    if message.get("callId"):
+        return message["callId"]
+    if message.get("sessionId"):
+        return message["sessionId"]
+    return "default"
 
 
-def get_memory():
-    return "\n\n".join(conversation_history)
+def _evict_if_needed():
+    """Simple LRU eviction: drop the least-recently-used session if over cap."""
+    if len(conversation_sessions) <= MAX_SESSIONS:
+        return
+    oldest_id = min(
+        conversation_sessions,
+        key=lambda sid: conversation_sessions[sid]["last_used"]
+    )
+    del conversation_sessions[oldest_id]
+
+
+def update_memory(session_id: str, user: str, assistant: str):
+    session = conversation_sessions.setdefault(
+        session_id, {"history": [], "last_used": time.time()}
+    )
+    session["history"].append(f"User: {user}\nAssistant: {assistant}")
+    if len(session["history"]) > MAX_HISTORY_PER_SESSION:
+        session["history"].pop(0)
+    session["last_used"] = time.time()
+    _evict_if_needed()
+
+
+def get_memory(session_id: str) -> str:
+    session = conversation_sessions.get(session_id)
+    if not session:
+        return ""
+    session["last_used"] = time.time()
+    return "\n\n".join(session["history"])
 
 
 # FIX: root route to prevent 502
@@ -40,6 +76,7 @@ async def vapi_webhook(request: Request):
 
         message = body.get("message", {})
         msg_type = message.get("type", "")
+        session_id = _get_session_id(message)
 
         # 🔹 Assistant init
         if msg_type == "assistant-request":
@@ -110,12 +147,10 @@ async def vapi_webhook(request: Request):
 })
 
                     context = retrieve(query)
-                    print("CONTEXT:", context)
-                    history = get_memory()
-
+                    history = get_memory(session_id)
                     answer = generate_response(query, context, history)
 
-                    update_memory(query, answer)
+                    update_memory(session_id, query, answer)
 
                     results.append({
                         "toolCallId": tool.get("id", "single"),
