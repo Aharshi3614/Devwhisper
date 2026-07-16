@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from retriever import retrieve, embedder
 from llm import generate_response
+from cache import get as cache_get, put as cache_put
 import json
 import time
 
@@ -146,9 +147,29 @@ async def vapi_webhook(request: Request):
     "message": "Sorry, I didn't understand that command. Try rephrasing."
 })
 
+                    # --- Cache lookup ---
+                    # Attempt to serve the response from cache. This skips
+                    # retrieval and LLM generation entirely on a hit.
+                    cached = cache_get(query)
+                    if cached is not None:
+                        # Still update conversation memory on cache hit so
+                        # the session history stays consistent.
+                        update_memory(session_id, query, cached)
+                        results.append({
+                            "toolCallId": tool.get("id", "single"),
+                            "result": cached
+                        })
+                        continue
+
+                    # --- Cache miss: run full pipeline ---
                     context = retrieve(query)
                     history = get_memory(session_id)
                     answer = generate_response(query, context, history)
+
+                    # --- Cache insertion ---
+                    # Only cache successful, non-empty responses.
+                    if answer and answer.strip():
+                        cache_put(query, answer)
 
                     update_memory(session_id, query, answer)
 
