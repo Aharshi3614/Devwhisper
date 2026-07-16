@@ -137,7 +137,7 @@ async def vapi_webhook(request: Request):
 
                 # FIX: handle string JSON params
                 params = fn.get("arguments") or fn.get("parameters") or {}
-                
+
                 if isinstance(params, str):
                     try:
                         params = json.loads(params)

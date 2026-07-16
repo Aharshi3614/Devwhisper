@@ -1,0 +1,145 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #f1f5f9;
+    padding: 20px;
+}
+
+.status-card {
+    max-width: 540px;
+    width: 100%;
+    background: #ffffff;
+    border-radius: 32px;
+    padding: 44px 36px 36px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.07), 0 8px 20px rgba(0, 0, 0, 0.03);
+    text-align: center;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 2px;
+}
+
+.brand-icon {
+    font-size: 28px;
+    line-height: 1;
+}
+
+.brand-name {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: #0b1120;
+}
+
+.brand-tagline {
+    font-size: 14px;
+    color: #6b7280;
+    margin-top: 4px;
+    margin-bottom: 28px;
+    font-weight: 400;
+}
+
+/* === 状态显示区 === */
+.status-display {
+    background: #f8fafc;
+    border-radius: 20px;
+    padding: 28px 20px 24px;
+    margin-bottom: 24px;
+    border: 1px solid #e9edf2;
+    transition: border-color 0.2s;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.status-dot {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #d1d5db;
+    flex-shrink: 0;
+    transition: background 0.3s;
+}
+
+.status-dot.healthy {
+    background: #22c55e;
+}
+.status-dot.degraded {
+    background: #eab308;
+}
+.status-dot.down {
+    background: #ef4444;
+}
+
+.status-label {
+    font-size: 20px;
+    font-weight: 600;
+    color: #0b1120;
+}
+
+.status-message {
+    font-size: 15px;
+    color: #6b7280;
+    line-height: 1.5;
+}
+
+/* === 详细信息 === */
+.status-details {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 0 20px;
+    border-top: 1px solid #eef2f6;
+    margin-bottom: 4px;
+}
+
+.detail-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+}
+
+.detail-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.detail-value {
+    font-size: 15px;
+    font-weight: 500;
+    color: #1f2937;
+}
+
+.footer-note {
+    font-size: 13px;
+    color: #9ca3af;
+    margin-top: 4px;
+}
+
+.footer-note strong {
+    color: #6b7280;
+    font-weight: 600;
+}

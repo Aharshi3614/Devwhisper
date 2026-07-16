@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DevWhisper · Status</title>
+    <link rel="stylesheet" href="/static/status.css" />
+</head>
+<body>
+
+    <div class="status-card">
+        <div class="brand">
+            <span class="brand-icon">🎙️</span>
+            <span class="brand-name">DevWhisper</span>
+        </div>
+        <p class="brand-tagline">Voice-first developer experience · Backend Status</p>
+
+        <div class="status-display" id="statusDisplay">
+            <div class="status-indicator">
+                <span class="status-dot" id="statusDot"></span>
+                <span class="status-label" id="statusLabel">Loading...</span>
+            </div>
+            <div class="status-message" id="statusMessage">Checking service status...</div>
+        </div>
+
+        <div class="status-details">
+            <div class="detail-item">
+                <span class="detail-label">Service</span>
+                <span class="detail-value" id="serviceName">DevWhisper API</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Last Updated</span>
+                <span class="detail-value" id="lastUpdate">--:--:--</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Response Time</span>
+                <span class="detail-value" id="responseTime">-- ms</span>
+            </div>
+        </div>
+
+        <p class="footer-note">
+            Auto-refreshes every <strong>3 seconds</strong>
+        </p>
+    </div>
+
+    <script src="/static/status.js"></script>
+</body>
+</html>

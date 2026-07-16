@@ -7,4 +7,6 @@ __pycache__/
 *.pkl
 *.egg-info/
 .eggs/
-venv/
+.venv/
+.idea/
+sample_codebase/
