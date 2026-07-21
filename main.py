@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from retriever import retrieve, embedder, client as qdrant_client
@@ -6,9 +6,16 @@ from llm import generate_response
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
 import json
+import os
 import time
+from datetime import datetime, timezone
 
 app = FastAPI()
+
+# --- Admin secret ------------------------------------------------------
+# Read once at startup. If unset, the /admin/* endpoints fail closed
+# (always 401) so sessions are never accidentally exposed.
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "").strip()
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -209,6 +216,93 @@ async def vapi_webhook(request: Request):
 @app.get("/health")
 def health():
     return {"status": "ok", "message": "DevWhisper is running"}
+
+
+# --- Admin endpoints ---------------------------------------------------
+# Protected by the X-Admin-Secret header. Fail-closed: if ADMIN_SECRET is
+# unset on the server, every request is rejected with 401.
+
+def _require_admin(x_admin_secret: str | None) -> None:
+    """
+    Validate the X-Admin-Secret header against the server's ADMIN_SECRET.
+
+    Uses a constant-time comparison to avoid timing-based secret recovery.
+    Raises 401 on any mismatch (including missing header / unset server
+    secret) so the endpoint never leaks session data by accident.
+    """
+    if not ADMIN_SECRET:
+        # Fail closed if the operator forgot to set ADMIN_SECRET.
+        raise HTTPException(status_code=401, detail="Admin secret not configured on server")
+    if not x_admin_secret or x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing admin secret")
+
+
+@app.get("/admin/sessions")
+def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias="X-Admin-Secret")):
+    """
+    Return the current set of active conversation sessions.
+
+    Reads from the in-memory ``conversation_sessions`` store used by the
+    webhook pipeline. Intended for debugging / monitoring only — no PII
+    beyond session IDs and timestamps is exposed.
+
+    Headers:
+        X-Admin-Secret: <ADMIN_SECRET env var value>
+
+    Response (200):
+        {
+            "status": "ok",
+            "active_sessions": 3,
+            "max_sessions": 100,
+            "generated_at": "2026-07-21T10:22:14Z",
+            "sessions": [
+                {
+                    "session_id": "call_a1b2c3d4",
+                    "last_used": "2026-07-21T10:22:14Z",
+                    "last_used_ago_seconds": 12,
+                    "message_count": 4
+                },
+                ...
+            ]
+        }
+
+    Response (401):
+        {"detail": "Invalid or missing admin secret"}
+    """
+    _require_admin(x_admin_secret)
+
+    now = time.time()
+    sessions = []
+    for session_id, data in conversation_sessions.items():
+        last_used_ts = data.get("last_used", 0)
+        try:
+            last_used_iso = (
+                datetime.fromtimestamp(last_used_ts, tz=timezone.utc).isoformat()
+                .replace("+00:00", "Z")
+            )
+        except (ValueError, OSError):
+            # Defensive: skip malformed timestamps rather than fail the request.
+            last_used_iso = None
+
+        sessions.append(
+            {
+                "session_id": session_id,
+                "last_used": last_used_iso,
+                "last_used_ago_seconds": int(now - last_used_ts) if last_used_ts else None,
+                "message_count": len(data.get("history", [])),
+            }
+        )
+
+    # Sort by most-recently-used first — most useful for monitoring.
+    sessions.sort(key=lambda s: s["last_used_ago_seconds"] or float("inf"))
+
+    return {
+        "status": "ok",
+        "active_sessions": len(sessions),
+        "max_sessions": MAX_SESSIONS,
+        "generated_at": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "sessions": sessions,
+    }
 
 @app.get("/history/{session_id}")
 def get_history(session_id: str):
