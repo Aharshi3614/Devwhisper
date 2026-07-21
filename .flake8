@@ -4,7 +4,6 @@ max-complexity = 10
 count = True
 show-source = True
 statistics = True
-exit-zero = True
 exclude =
     .git,
     __pycache__,
