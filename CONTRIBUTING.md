@@ -55,7 +55,7 @@ docs/issue-1-readme-badges
 - Add tests where relevant, especially for new logic in `retriever.py`, `llm.py`, or `handlers/`.
 - Run linting locally before pushing:
   ```bash
-  flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+  flake8 .
   ```
 - Run tests locally before pushing:
   ```bash
