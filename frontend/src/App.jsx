@@ -166,13 +166,15 @@ function App() {
   return (
     <BrowserRouter>
       <div className="app">
+        <ThemeToggle />
+
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/history" element={<HistoryPanel />} />
         </Routes>
       </div>
     </BrowserRouter>
-  )
+  );
 }
 
 export default App
