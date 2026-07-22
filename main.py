@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from retriever import retrieve, embedder, client as qdrant_client
-from llm import generate_response
+from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
 import json
@@ -216,6 +216,61 @@ async def vapi_webhook(request: Request):
 @app.get("/health")
 def health():
     return {"status": "ok", "message": "DevWhisper is running"}
+
+
+@app.post("/stream")
+async def stream_query(request: Request):
+    try:
+        body = await request.json()
+        query = body.get("query", "")
+        session_id = body.get("sessionId", "default")
+
+        if not query:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "Query is required."}
+            )
+
+        # Cache lookup
+        cached = cache_get(query)
+        if cached is not None:
+            update_memory(session_id, query, cached)
+
+            async def cached_generator():
+                yield cached
+
+            return StreamingResponse(
+                cached_generator(),
+                media_type="text/plain"
+            )
+
+        # Cache miss: run retrieval
+        context = retrieve(query)
+        history = get_memory(session_id)
+
+        def event_generator():
+            full_response = []
+            for token in generate_response_stream(query, context, history):
+                full_response.append(token)
+                yield token
+
+            # Update cache and session history on complete stream
+            answer = "".join(full_response)
+            if answer and answer.strip():
+                cache_put(query, answer)
+                update_memory(session_id, query, answer)
+
+        return StreamingResponse(event_generator(), media_type="text/plain")
+
+    except Exception as e:
+        print("SERVER STREAM ERROR:", e)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "An unexpected error occurred."
+            }
+        )
 
 
 # --- Admin endpoints ---------------------------------------------------

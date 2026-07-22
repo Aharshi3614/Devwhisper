@@ -14,7 +14,17 @@ function ResponseOutput({ response, loading, error }) {
   const formatResponse = (text) => {
     if (!text) return null
 
-    const parts = text.split(/(```[\s\S]*?```)/g)
+    // Determine if we have an unclosed code block at the end (odd number of ``` occurrences)
+    const occurrences = (text.match(/```/g) || []).length
+    const isUnclosed = occurrences % 2 !== 0
+
+    let parsedText = text
+    if (isUnclosed) {
+      // Append temporary closing triple-backtick to render the block correctly while streaming
+      parsedText += '\n```'
+    }
+
+    const parts = parsedText.split(/(```[\s\S]*?```)/g)
     return parts.map((part, index) => {
       if (part.startsWith('```')) {
         const match = part.match(/```(\w*)\n([\s\S]*?)```/)
@@ -46,7 +56,8 @@ function ResponseOutput({ response, loading, error }) {
     })
   }
 
-  if (loading) {
+  // Show loading skeleton ONLY before we have received any response text
+  if (loading && !response) {
     return (
       <div className="response-container loading">
         <div className="skeleton-title"></div>
@@ -79,6 +90,7 @@ function ResponseOutput({ response, loading, error }) {
       </div>
       <div className="response-body">
         {formatResponse(response)}
+        {loading && <span className="streaming-cursor"></span>}
       </div>
     </div>
   )

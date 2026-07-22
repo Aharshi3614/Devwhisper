@@ -521,3 +521,18 @@
   align-items: center;
   gap: 24px; 
 }
+
+/* --- Streaming Cursor --- */
+.streaming-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background-color: var(--accent);
+  margin-left: 4px;
+  animation: cursor-blink 0.8s infinite steps(2, start);
+  vertical-align: middle;
+}
+
+@keyframes cursor-blink {
+  to { visibility: hidden; }
+}
