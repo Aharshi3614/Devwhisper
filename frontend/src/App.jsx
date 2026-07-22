@@ -1,17 +1,21 @@
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
-import ThemeToggle from "./components/ThemeToggle";
-import "./App.css";
+import ThemeToggle from "./components/ThemeToggle"
+import MicButton from './components/MicButton.jsx'
+import "./App.css"
 
 function Home() {
   return (
-    <>
+    <div className="home-content">
       <h1>DevWhisper</h1>
       <p>Voice-native developer experience agent</p>
+
+      <MicButton />
+
       <p>
         <Link to="/history">View History</Link>
       </p>
-    </>
+    </div>
   )
 }
 
