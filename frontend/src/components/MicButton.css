@@ -1,0 +1,53 @@
+.mic-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.mic-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.mic-button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.mic-button.recording {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.mic-icon {
+  font-size: 18px;
+}
+
+@media (max-width: 480px) {
+  .mic-button {
+    width: 100%;
+    justify-content: center;
+    padding: 14px 20px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .mic-button {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  }
+
+  .mic-button:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+}

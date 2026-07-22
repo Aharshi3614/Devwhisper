@@ -2,6 +2,9 @@ import { useState } from 'react'
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
+import ThemeToggle from './components/ThemeToggle.jsx'
+import MicButton from './components/MicButton.jsx'
+import './App.css'
 
 function Home() {
   const [queryText, setQueryText] = useState('')
@@ -92,27 +95,11 @@ function Home() {
       <main className="interactive-card">
         {/* Voice Segment */}
         <section className="voice-section">
-          <div className="mic-container">
-            <button 
-              onClick={toggleVoiceMode}
-              className={`mic-button ${isVoiceActive ? 'listening' : ''}`}
-              aria-label={isVoiceActive ? "Deactivate voice mode" : "Activate voice mode"}
-              title="Click to toggle voice simulation mode"
-            >
-              <span className="mic-icon">🎙️</span>
-              <span className="pulse-ring"></span>
-              <span className="pulse-ring delay-1"></span>
-            </button>
-          </div>
+          <MicButton />
           <div className="voice-status">
-            <p className="voice-status-title">
-              Voice Assistant: {isVoiceActive ? <span className="status-live">● Listening</span> : <span className="status-ready">Ready</span>}
-            </p>
+            <p className="voice-status-title">Voice Assistant</p>
             <p className="voice-status-desc">
-              {isVoiceActive 
-                ? "Simulating active voice call connection. Speak through your microphone, or toggle off." 
-                : "Vapi endpoint is configured on the backend. Click the mic to simulate or use text fallback below."
-              }
+              Voice flow is ready. Click the mic button to start/stop recording.
             </p>
           </div>
         </section>
@@ -166,13 +153,15 @@ function App() {
   return (
     <BrowserRouter>
       <div className="app">
+        <ThemeToggle />
+
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/history" element={<HistoryPanel />} />
         </Routes>
       </div>
     </BrowserRouter>
-  )
+  );
 }
 
 export default App

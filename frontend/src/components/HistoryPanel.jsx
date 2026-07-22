@@ -9,6 +9,7 @@ function HistoryPanel() {
   const [selectedSession, setSelectedSession] = useState(null)
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const listRef = useRef(null)
 
   // Parse "User: ...\nAssistant: ..." pairs from the raw history string
@@ -16,10 +17,12 @@ function HistoryPanel() {
     return raw.split('\n\n').filter(Boolean).map(block => {
       const lines = block.split('\n')
       const userLine = lines.find(l => l.startsWith('User: '))
-      const asstLine = lines.find(l => l.startsWith('Assistant: '))
+      const asstIndex = lines.findIndex(l => l.startsWith('Assistant: '))
       return {
         query: userLine ? userLine.slice(6) : '',
-        response: asstLine ? asstLine.slice(11) : '',
+        response: asstIndex !== -1
+          ? lines.slice(asstIndex).map(l => l.startsWith('Assistant: ') ? l.slice(11) : l).join('\n').trim()
+          : '',
       }
     })
   }
@@ -67,7 +70,7 @@ function HistoryPanel() {
     let active = true
 
     function fetchHistory() {
-      fetch(`/history/${encodeURIComponent(selectedSession)}`)
+      fetch(`/history?session_id=${encodeURIComponent(selectedSession)}`)
         .then(res => res.json())
         .then(data => {
           if (!active) return
@@ -107,10 +110,43 @@ function HistoryPanel() {
 
   return (
     <div className="history-panel">
+      {/* Sidebar overlay */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+
+      {/* Sidebar */}
+      <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}>
+        <div className="sidebar-header">
+          <h3>Sessions</h3>
+          <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>✕</button>
+        </div>
+        <nav className="sidebar-list">
+          {sessions.length === 0 ? (
+            <p className="sidebar-empty">No sessions yet</p>
+          ) : (
+            sessions.map(id => (
+              <button
+                key={id}
+                className={`sidebar-item ${id === selectedSession ? 'sidebar-item--active' : ''}`}
+                onClick={() => { setSelectedSession(id); setSidebarOpen(false) }}
+              >
+                {id}
+              </button>
+            ))
+          )}
+        </nav>
+      </aside>
+
+      {/* Hamburger button */}
+      <button
+        className="hamburger"
+        onClick={() => setSidebarOpen(true)}
+        aria-label="Open sessions"
+      >≡</button>
+
       <h2>History</h2>
       <p className="subtitle">Current session queries and responses</p>
 
-      {/* Session selector */}
+      {/* Session selector — kept for non-sidebar use but hidden when sidebar shows */}
       {sessions.length > 1 && (
         <div className="session-selector">
           <label htmlFor="session-select">Session: </label>
