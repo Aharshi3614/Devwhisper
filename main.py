@@ -360,13 +360,18 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
     }
 
 @app.get("/history")
-def get_history(session_id: str | None = None):
+def get_history(
+    x_admin_secret: str | None = Header(default=None, alias="X-Admin-Secret"),
+    session_id: str | None = None,
+):
     """
-    Retrieve conversation history.
+    Retrieve conversation history. Requires valid X-Admin-Secret.
 
     - GET /history          → returns all session IDs
     - GET /history?session_id=xxx → returns history for that session
     """
+    _require_admin(x_admin_secret)
+
     if session_id:
         history = get_memory(session_id)
         return {"session_id": session_id, "history": history}
