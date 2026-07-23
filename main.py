@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 from retriever import retrieve, embedder, client as qdrant_client
 from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
@@ -24,6 +25,20 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 conversation_sessions = {}
 MAX_SESSIONS = 100
 MAX_HISTORY_PER_SESSION = 5
+MAX_HISTORY_BYTES = 100_000  # 100KB per session
+MAX_SESSION_ID_LENGTH = 128
+MAX_BODY_SIZE = 1_048_576  # 1MB
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_BODY_SIZE:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "Request body too large"}
+        )
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -45,13 +60,16 @@ async def shutdown_event():
 def _get_session_id(message: dict) -> str:
     """Extract a session/call ID from the Vapi payload, with fallbacks."""
     call = message.get("call", {})
+    sid = "default"
     if isinstance(call, dict) and call.get("id"):
-        return call["id"]
-    if message.get("callId"):
-        return message["callId"]
-    if message.get("sessionId"):
-        return message["sessionId"]
-    return "default"
+        sid = call["id"]
+    elif message.get("callId"):
+        sid = message["callId"]
+    elif message.get("sessionId"):
+        sid = message["sessionId"]
+    if not isinstance(sid, str) or len(sid) > MAX_SESSION_ID_LENGTH:
+        return "default"
+    return sid
 
 
 def _evict_if_needed():
@@ -67,11 +85,23 @@ def _evict_if_needed():
 
 def update_memory(session_id: str, user: str, assistant: str):
     session = conversation_sessions.setdefault(
-        session_id, {"history": [], "last_used": time.time()}
+        session_id, {"history": [], "last_used": time.time(), "total_bytes": 0}
     )
-    session["history"].append(f"User: {user}\nAssistant: {assistant}")
-    if len(session["history"]) > MAX_HISTORY_PER_SESSION:
-        session["history"].pop(0)
+    entry = f"User: {user}\nAssistant: {assistant}"
+    entry_bytes = len(entry.encode("utf-8"))
+    session["total_bytes"] = session.get("total_bytes", 0) + entry_bytes
+    session["history"].append(entry)
+
+    # Enforce byte-size cap — evict oldest entries until under limit
+    while session["total_bytes"] > MAX_HISTORY_BYTES and session["history"]:
+        removed = session["history"].pop(0)
+        session["total_bytes"] -= len(removed.encode("utf-8"))
+
+    # Enforce message count cap
+    while len(session["history"]) > MAX_HISTORY_PER_SESSION:
+        removed = session["history"].pop(0)
+        session["total_bytes"] -= len(removed.encode("utf-8"))
+
     session["last_used"] = time.time()
     _evict_if_needed()
 
