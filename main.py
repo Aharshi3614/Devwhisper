@@ -7,6 +7,7 @@ from cache import get as cache_get, put as cache_put
 from handlers import route_command
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -22,6 +23,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # --- Per-session memory store ---
 # { session_id: {"history": [...], "last_used": <timestamp>} }
 conversation_sessions = {}
+sessions_lock = threading.Lock()
 MAX_SESSIONS = 100
 MAX_HISTORY_PER_SESSION = 5
 
@@ -66,22 +68,24 @@ def _evict_if_needed():
 
 
 def update_memory(session_id: str, user: str, assistant: str):
-    session = conversation_sessions.setdefault(
-        session_id, {"history": [], "last_used": time.time()}
-    )
-    session["history"].append(f"User: {user}\nAssistant: {assistant}")
-    if len(session["history"]) > MAX_HISTORY_PER_SESSION:
-        session["history"].pop(0)
-    session["last_used"] = time.time()
-    _evict_if_needed()
+    with sessions_lock:
+        session = conversation_sessions.setdefault(
+            session_id, {"history": [], "last_used": time.time()}
+        )
+        session["history"].append(f"User: {user}\nAssistant: {assistant}")
+        if len(session["history"]) > MAX_HISTORY_PER_SESSION:
+            session["history"].pop(0)
+        session["last_used"] = time.time()
+        _evict_if_needed()
 
 
 def get_memory(session_id: str) -> str:
-    session = conversation_sessions.get(session_id)
-    if not session:
-        return ""
-    session["last_used"] = time.time()
-    return "\n\n".join(session["history"])
+    with sessions_lock:
+        session = conversation_sessions.get(session_id)
+        if not session:
+            return ""
+        session["last_used"] = time.time()
+        return "\n\n".join(session["history"])
 
 
 # FIX: root route to prevent 502
@@ -328,7 +332,9 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
 
     now = time.time()
     sessions = []
-    for session_id, data in conversation_sessions.items():
+    with sessions_lock:
+        items = list(conversation_sessions.items())
+    for session_id, data in items:
         last_used_ts = data.get("last_used", 0)
         try:
             last_used_iso = (
@@ -370,5 +376,6 @@ def get_history(session_id: str | None = None):
     if session_id:
         history = get_memory(session_id)
         return {"session_id": session_id, "history": history}
-    all_session_ids = list(conversation_sessions.keys())
+    with sessions_lock:
+        all_session_ids = list(conversation_sessions.keys())
     return {"session_ids": all_session_ids}
