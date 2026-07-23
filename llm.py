@@ -93,11 +93,6 @@ Code context:
 
 Conversation history:
 {history}
-
-INSTRUCTIONS:
-- Answer strictly from code
-- Do NOT add explanation unless asked
-- Keep output clean and structured
 """,
                 },
             ],
@@ -167,11 +162,6 @@ Code context:
 
 Conversation history:
 {history}
-
-INSTRUCTIONS:
-- Answer strictly from code
-- Do NOT add explanation unless asked
-- Keep output clean and structured
 """,
                 },
             ],
