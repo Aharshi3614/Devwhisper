@@ -1,6 +1,9 @@
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from retriever import retrieve, embedder, client as qdrant_client
 from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
@@ -11,6 +14,10 @@ import time
 from datetime import datetime, timezone
 
 app = FastAPI()
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- Admin secret ------------------------------------------------------
 # Read once at startup. If unset, the /admin/* endpoints fail closed
@@ -86,11 +93,13 @@ def get_memory(session_id: str) -> str:
 
 # FIX: root route to prevent 502
 @app.post("/")
+@limiter.limit("30/minute")
 async def root():
     return {"status": "ok"}
 
 
 @app.post("/webhook")
+@limiter.limit("10/minute")
 async def vapi_webhook(request: Request):
     try:
         body = await request.json()
@@ -214,11 +223,13 @@ async def vapi_webhook(request: Request):
 
 
 @app.get("/health")
-def health():
+@limiter.limit("30/minute")
+def health(request: Request):
     return {"status": "ok", "message": "DevWhisper is running"}
 
 
 @app.post("/stream")
+@limiter.limit("5/minute")
 async def stream_query(request: Request):
     try:
         body = await request.json()
@@ -293,7 +304,8 @@ def _require_admin(x_admin_secret: str | None) -> None:
 
 
 @app.get("/admin/sessions")
-def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias="X-Admin-Secret")):
+@limiter.limit("30/minute")
+def admin_list_sessions(request: Request, x_admin_secret: str | None = Header(default=None, alias="X-Admin-Secret")):
     """
     Return the current set of active conversation sessions.
 
@@ -360,7 +372,8 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
     }
 
 @app.get("/history")
-def get_history(session_id: str | None = None):
+@limiter.limit("30/minute")
+def get_history(request: Request, session_id: str | None = None):
     """
     Retrieve conversation history.
 
