@@ -222,6 +222,13 @@ def health():
     return {"status": "ok", "message": "DevWhisper is running"}
 
 
+@app.post("/reset")
+def reset_memory():
+    """Clear all conversation history and return confirmation."""
+    conversation_sessions.clear()
+    return {"status": "memory cleared"}
+
+
 @app.post("/stream")
 async def stream_query(request: Request):
     try:
