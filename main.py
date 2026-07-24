@@ -5,6 +5,7 @@ from retriever import retrieve, embedder, client as qdrant_client
 from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
+from logger import logger
 import json
 import os
 import time
@@ -29,17 +30,17 @@ MAX_HISTORY_PER_SESSION = 5
 @app.on_event("startup")
 async def startup_event():
     embedder.encode("warmup query")
-    print("Embedder warmed up and ready!")
+    logger.info("Embedder warmed up and ready!")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    print("Shutting down DevWhisper server...")
+    logger.info("Shutting down DevWhisper server...")
     try:
         qdrant_client.close()
-        print("Qdrant client connection closed successfully.")
+        logger.info("Qdrant client connection closed successfully.")
     except Exception as e:
-        print(f"Error during Qdrant client connection cleanup: {e}")
+        logger.error("Error during Qdrant client connection cleanup", exc_info=True)
 
 
 def _get_session_id(message: dict) -> str:
@@ -94,7 +95,7 @@ async def root():
 async def vapi_webhook(request: Request):
     try:
         body = await request.json()
-        print("Incoming:", body)
+        logger.info("Incoming webhook payload: %s", body)
 
         message = body.get("message", {})
         msg_type = message.get("type", "")
@@ -150,7 +151,7 @@ async def vapi_webhook(request: Request):
                     try:
                         params = json.loads(params)
                     except json.JSONDecodeError as e:
-                        print(f"Failed to parse command parameters: {e}")
+                        logger.error("Failed to parse command parameters: %s", e)
                         return JSONResponse(
                             status_code=400,
                             content={
@@ -183,9 +184,12 @@ async def vapi_webhook(request: Request):
                         continue
 
                     # --- Cache miss: run full pipeline ---
-                    context = retrieve(query)
+                    context, sources = retrieve(query, include_sources=True)
                     history = get_memory(session_id)
                     answer = route_command(query, session_id) or generate_response(query, context, history)
+
+                    if answer and answer.strip() and sources:
+                        answer += "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
 
                     # --- Cache insertion ---
                     # Only cache successful, non-empty responses.
@@ -204,7 +208,7 @@ async def vapi_webhook(request: Request):
         return JSONResponse({"status": "ok"})
 
     except Exception as e:
-        print("SERVER ERROR:", e)
+        logger.error("SERVER ERROR", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
@@ -245,7 +249,7 @@ async def stream_query(request: Request):
             )
 
         # Cache miss: run retrieval
-        context = retrieve(query)
+        context, sources = retrieve(query, include_sources=True)
         history = get_memory(session_id)
 
         def event_generator():
@@ -253,6 +257,11 @@ async def stream_query(request: Request):
             for token in generate_response_stream(query, context, history):
                 full_response.append(token)
                 yield token
+
+            if sources:
+                sources_str = "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
+                yield sources_str
+                full_response.append(sources_str)
 
             # Update cache and session history on complete stream
             answer = "".join(full_response)
@@ -263,7 +272,7 @@ async def stream_query(request: Request):
         return StreamingResponse(event_generator(), media_type="text/plain")
 
     except Exception as e:
-        print("SERVER STREAM ERROR:", e)
+        logger.error("SERVER STREAM ERROR", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={

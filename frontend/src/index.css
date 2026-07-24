@@ -70,6 +70,7 @@ h2 {
 
 h1 {
   font-size: 56px;
+  line-height: 1.15;
   letter-spacing: -1.68px;
   margin: 32px 0;
   @media (max-width: 1024px) {
@@ -79,7 +80,7 @@ h1 {
 }
 h2 {
   font-size: 24px;
-  line-height: 118%;
+  line-height: 1.2;
   letter-spacing: -0.24px;
   margin: 0 0 8px;
   @media (max-width: 1024px) {

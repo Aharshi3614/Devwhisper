@@ -56,13 +56,14 @@ function ResponseOutput({ response, loading, error }) {
     })
   }
 
-  // Show loading skeleton ONLY before we have received any response text
+  // Show loading spinner ONLY before we have received any response text
   if (loading && !response) {
     return (
       <div className="response-container loading">
-        <div className="skeleton-title"></div>
-        <div className="skeleton-line"></div>
-        <div className="skeleton-line short"></div>
+        <div className="loading-spinner-wrapper">
+          <div className="loading-spinner"></div>
+          <span className="loading-text">DevWhisper is thinking...</span>
+        </div>
       </div>
     )
   }
