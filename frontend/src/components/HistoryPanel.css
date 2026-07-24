@@ -237,6 +237,99 @@
   transform: scale(0.95);
 }
 
+/* Feedback buttons — Like / Dislike */
+.like-button,
+.dislike-button {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.like-button:hover {
+  background: rgba(16, 185, 129, 0.08);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.like-button:active {
+  transform: scale(0.95);
+}
+
+.dislike-button:hover {
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.dislike-button:active {
+  transform: scale(0.95);
+}
+
+/* Active (liked / disliked) state */
+.like-button.active {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+.dislike-button.active {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* Thank-you toast */
+.thank-you-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+
+  padding: 12px 24px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  color: var(--text-h);
+  font-size: 14px;
+  font-weight: 500;
+
+  animation: toastIn 0.3s ease, toastOut 0.3s ease 2.2s forwards;
+  pointer-events: none;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes toastOut {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+  }
+}
+
 /* Session selector */
 .session-selector {
   margin-bottom: 20px;
@@ -465,6 +558,12 @@
     margin-left: 0;
   }
 
+  .like-button,
+  .dislike-button {
+    align-self: flex-end;
+    margin-left: 0;
+  }
+
   .history-list {
     max-height: 50vh;
   }
@@ -493,5 +592,35 @@
     background: rgba(192, 132, 252, 0.15);
     color: #c084fc;
     border-color: rgba(192, 132, 252, 0.5);
+  }
+
+  .like-button:hover {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border-color: rgba(16, 185, 129, 0.4);
+  }
+
+  .like-button.active {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border-color: rgba(16, 185, 129, 0.6);
+  }
+
+  .dislike-button:hover {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border-color: rgba(239, 68, 68, 0.4);
+  }
+
+  .dislike-button.active {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border-color: rgba(239, 68, 68, 0.6);
+  }
+
+  .thank-you-toast {
+    background: #1f2028;
+    border-color: #2e303a;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   }
 }

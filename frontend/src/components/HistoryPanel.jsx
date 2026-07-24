@@ -5,6 +5,7 @@ import './HistoryPanel.css'
 const POLL_INTERVAL = 3000 // 3 seconds
 
 function HistoryPanel() {
+  const timerRef = useRef(null)
   const [sessions, setSessions] = useState([])
   const [selectedSession, setSelectedSession] = useState(null)
   const [history, setHistory] = useState([])
@@ -12,6 +13,8 @@ function HistoryPanel() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [shareFeedback, setShareFeedback] = useState('')
   const [copiedIndex, setCopiedIndex] = useState(null)
+  const [feedbackMap, setFeedbackMap] = useState({}) // 'like', 'dislike', or null
+  const [showThankYou, setShowThankYou] = useState(false)
   const listRef = useRef(null)
 
   // Parse "User: ...\nAssistant: ..." pairs from the raw history string
@@ -92,8 +95,45 @@ function HistoryPanel() {
       setShareFeedback('Failed to copy share link')
       setTimeout(() => setShareFeedback(''), 2000)
     }
-
   }
+
+  const handleLike = (index) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    setFeedbackMap(prev => {
+      const current = prev[index]
+      const newVal = current === 'like' ? null : 'like'
+      return { ...prev, [index]: newVal }
+    })
+    setShowThankYou(true)
+    timerRef.current = setTimeout(() => {
+      setShowThankYou(false)
+      timerRef.current = null
+    }, 2500)
+  }
+
+  const handleDislike = (index) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    setFeedbackMap(prev => {
+      const current = prev[index]
+      const newVal = current === 'dislike' ? null : 'dislike'
+      return { ...prev, [index]: newVal }
+    })
+    setShowThankYou(true)
+    timerRef.current = setTimeout(() => {
+      setShowThankYou(false)
+      timerRef.current = null
+    }, 2500)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    console.log('Feedback changed to:', feedbackMap)
+  }, [feedbackMap])
 
   // Poll session list every POLL_INTERVAL ms
   useEffect(() => {
@@ -259,10 +299,26 @@ function HistoryPanel() {
                   aria-label="Share this exchange">
                   {copiedIndex === index ? 'Copied!' : 'Share'}
                 </button>
+                <button
+                  className={`like-button ${feedbackMap[index] === 'like' ? 'active' : ''}`}
+                  onClick={() => handleLike(index)}
+                >
+                  {feedbackMap[index] === 'like' ? 'Liked' : 'Like'}
+                </button>
+                <button
+                  className={`dislike-button ${feedbackMap[index] === 'dislike' ? 'active' : ''}`}
+                  onClick={() => handleDislike(index)}
+                >
+                  {feedbackMap[index] === 'dislike' ? 'Disliked' : 'Dislike'}
+                </button>
               </div>
             </div>
           ))}
         </div>
+      )}
+
+      {showThankYou && (
+        <div className="thank-you-toast">Thanks for your feedback 🙌</div>
       )}
 
       <Link to="/" className="back-link">← Back to Home</Link>
