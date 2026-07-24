@@ -16,7 +16,7 @@ function Home() {
   const recognitionRef = useRef(null)
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
-  const [sessionId] = useState(() => {
+  const [sessionId, setSessionId] = useState(() => {
     const key = 'devwhisper_session_id'
     const existing = sessionStorage.getItem(key)
     if (existing) return existing

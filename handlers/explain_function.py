@@ -1,6 +1,7 @@
 import os
 from llm import _get_client, _get_model
 from retriever import retrieve
+from logger import logger
 
 
 def can_handle(query: str) -> bool:
@@ -45,5 +46,5 @@ Keep your response short (under 4 sentences).
         answer = response.choices[0].message.content.strip()
         return answer
     except Exception as e:
-        print(f"Error in explain_function handler: {e}")
+        logger.error("Error in explain_function handler", exc_info=True)
         return "Sorry, I encountered an error while trying to explain the function."

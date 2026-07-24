@@ -1,6 +1,7 @@
 import os
 
 from openai import OpenAI
+from logger import logger
 
 from config import (
     DEFAULT_GROQ_MODEL,
@@ -106,10 +107,10 @@ INSTRUCTIONS:
         if response.choices:
             return response.choices[0].message.content
 
-        print("Unexpected response:", response)
+        logger.error("Unexpected response: %s", response)
         return "I could not process the response."
     except Exception as error:
-        print("LLM ERROR:", error)
+        logger.error("LLM ERROR", exc_info=True)
         return "Sorry, I ran into an error while processing your request."
 
 
@@ -183,5 +184,5 @@ INSTRUCTIONS:
                 yield chunk.choices[0].delta.content
 
     except Exception as error:
-        print("LLM STREAM ERROR:", error)
+        logger.error("LLM STREAM ERROR", exc_info=True)
         yield "Sorry, I ran into an error while processing your request."
