@@ -183,9 +183,12 @@ async def vapi_webhook(request: Request):
                         continue
 
                     # --- Cache miss: run full pipeline ---
-                    context = retrieve(query)
+                    context, sources = retrieve(query, include_sources=True)
                     history = get_memory(session_id)
                     answer = route_command(query, session_id) or generate_response(query, context, history)
+
+                    if answer and answer.strip() and sources:
+                        answer += "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
 
                     # --- Cache insertion ---
                     # Only cache successful, non-empty responses.
@@ -245,7 +248,7 @@ async def stream_query(request: Request):
             )
 
         # Cache miss: run retrieval
-        context = retrieve(query)
+        context, sources = retrieve(query, include_sources=True)
         history = get_memory(session_id)
 
         def event_generator():
@@ -253,6 +256,11 @@ async def stream_query(request: Request):
             for token in generate_response_stream(query, context, history):
                 full_response.append(token)
                 yield token
+
+            if sources:
+                sources_str = "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
+                yield sources_str
+                full_response.append(sources_str)
 
             # Update cache and session history on complete stream
             answer = "".join(full_response)
