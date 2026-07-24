@@ -16,7 +16,7 @@ function Home() {
   const recognitionRef = useRef(null)
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
-  const [sessionId] = useState(() => {
+  const [sessionId, setSessionId] = useState(() => {
     const key = 'devwhisper_session_id'
     const existing = sessionStorage.getItem(key)
     if (existing) return existing
@@ -96,6 +96,15 @@ function Home() {
         }, 3000)
       }
     }
+  }
+
+  const handleClearChat = () => {
+    setResponse('')
+    setQueryText('')
+    setError(null)
+    const newId = 'web-' + Math.random().toString(36).substring(2, 9)
+    sessionStorage.setItem('devwhisper_session_id', newId)
+    setSessionId(newId)
   }
 
   const handleWebhookFallback = async () => {
@@ -241,13 +250,24 @@ function Home() {
                 </div>
               </div>
               
-              <button 
-                type="submit" 
-                disabled={loading || !queryText.trim() || isListening} 
-                className="submit-button"
-              >
-                {loading ? 'Analyzing...' : 'Send Query'}
-              </button>
+              <div className="toolbar-right">
+                <button
+                  type="button"
+                  onClick={handleClearChat}
+                  disabled={loading || (!queryText.trim() && !response && !error)}
+                  className="clear-button"
+                  title="Clear conversation"
+                >
+                  Clear Chat
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={loading || !queryText.trim() || isListening} 
+                  className="submit-button"
+                >
+                  {loading ? 'Analyzing...' : 'Send Query'}
+                </button>
+              </div>
             </div>
           </div>
         </form>
