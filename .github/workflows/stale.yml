@@ -1,0 +1,75 @@
+# This workflow warns and then closes issues and PRs that have had no activity for a specified amount of time.
+#
+# You can adjust the behavior by modifying this file.
+# For more information, see:
+# https://github.com/actions/stale
+name: Mark stale issues and unassign inactive contributors
+on:
+  schedule:
+  - cron: '37 13 * * *'
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Mark stale (no closing)
+      uses: actions/stale@v5
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+        # Issues
+        days-before-issue-stale: 4
+        days-before-issue-close: -1   # -1 disables auto-closing
+        stale-issue-label: 'no-issue-activity'
+        stale-issue-message: >
+          This issue has had no activity for 4 days. If you're still working on it,
+          please comment to let us know. Otherwise, the assignee will be removed so
+          this issue can be picked up by someone else.
+
+        # Pull Requests
+        days-before-pr-stale: 4
+        days-before-pr-close: -1      # -1 disables auto-closing
+        stale-pr-label: 'no-pr-activity'
+        stale-pr-message: >
+          This PR has had no activity for 4 days. Please push an update or comment
+          if you're still working on it.
+
+        exempt-issue-labels: 'help wanted,pinned'
+        exempt-pr-labels: 'help wanted,pinned'
+        remove-stale-when-updated: true
+
+    - name: Remove assignees from newly-stale issues
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: staleIssues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            labels: 'no-issue-activity',
+            state: 'open',
+          });
+
+          for (const issue of staleIssues) {
+            const assignees = issue.assignees.map(a => a.login);
+            if (assignees.length > 0) {
+              await github.rest.issues.removeAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                assignees: assignees,
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Removed inactive assignee(s) (${assignees.join(", ")}) due to no activity. This issue is now open for anyone to pick up again — just comment to claim it.`,
+              });
+
+              console.log(`Unassigned ${assignees.join(", ")} from issue #${issue.number}`);
+            }
+          }
