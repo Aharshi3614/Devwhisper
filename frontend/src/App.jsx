@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
@@ -11,7 +11,9 @@ function Home() {
   const [response, setResponse] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [isVoiceActive, setIsVoiceActive] = useState(false)
+  const [isListening, setIsListening] = useState(false)
+  const [speechSupported, setSpeechSupported] = useState(false)
+  const recognitionRef = useRef(null)
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
   const [sessionId] = useState(() => {
@@ -22,6 +24,79 @@ function Home() {
     sessionStorage.setItem(key, newId)
     return newId
   })
+
+  // Initialize Speech Recognition API
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (SpeechRecognition) {
+      setSpeechSupported(true)
+      const rec = new SpeechRecognition()
+      rec.continuous = true
+      rec.interimResults = true
+      rec.lang = 'en-US'
+
+      rec.onstart = () => {
+        setIsListening(true)
+      }
+
+      rec.onresult = (event) => {
+        let transcript = ''
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript
+        }
+        setQueryText(transcript)
+      }
+
+      rec.onerror = (err) => {
+        console.error('Speech Recognition Error:', err)
+        setIsListening(false)
+      }
+
+      rec.onend = () => {
+        setIsListening(false)
+      }
+
+      recognitionRef.current = rec
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort()
+      }
+    }
+  }, [])
+
+  const handleMicClick = () => {
+    if (speechSupported && recognitionRef.current) {
+      if (isListening) {
+        recognitionRef.current.stop()
+      } else {
+        setQueryText('')
+        try {
+          recognitionRef.current.start()
+        } catch (err) {
+          console.error('Failed to start speech recognition:', err)
+        }
+      }
+    } else {
+      // Mock Fallback for browsers/environments without SpeechRecognition
+      if (isListening) {
+        setIsListening(false)
+      } else {
+        setIsListening(true)
+        setQueryText('Listening...')
+        setTimeout(() => {
+          setIsListening(prev => {
+            if (prev) {
+              setQueryText('In main.py, what functions are found?')
+              return false
+            }
+            return prev
+          })
+        }, 3000)
+      }
+    }
+  }
 
   const handleWebhookFallback = async () => {
     const payload = {
@@ -68,8 +143,8 @@ function Home() {
   }
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
-    if (!queryText.trim() || loading) return
+    if (e) e.preventDefault()
+    if (!queryText.trim() || loading || isListening) return
 
     setLoading(true)
     setError(null)
@@ -124,10 +199,6 @@ function Home() {
     }
   }
 
-  const toggleVoiceMode = () => {
-    setIsVoiceActive(prev => !prev)
-  }
-
   return (
     <div className="landing-container">
       <header className="hero-header">
@@ -135,46 +206,51 @@ function Home() {
         <p className="subtitle-text">Voice-native developer experience agent</p>
       </header>
 
-      <main className="interactive-card">
-        {/* Voice Segment */}
-        <section className="voice-section">
-          <MicButton />
-          <div className="voice-status">
-            <p className="voice-status-title">Voice Assistant</p>
-            <p className="voice-status-desc">
-              Voice flow is ready. Click the mic button to start/stop recording.
-            </p>
-          </div>
-        </section>
-
-        <div className="or-divider">
-          <span className="line"></span>
-          <span className="divider-text">OR QUERY VIA TEXT</span>
-          <span className="line"></span>
-        </div>
-
-        {/* Text Input Segment */}
-        <section className="text-query-section">
-          <form onSubmit={handleSubmit} className="query-form">
-            <div className="textarea-wrapper">
-              <textarea
-                value={queryText}
-                onChange={e => setQueryText(e.target.value)}
-                placeholder="Ask about your codebase... (e.g. In main.py, what functions are found?)"
-                disabled={loading}
-                rows={3}
-                className="query-input"
-              />
+      <main className="query-card">
+        <form onSubmit={handleSubmit} className="query-form">
+          <div className="textarea-wrapper">
+            <textarea
+              value={queryText}
+              onChange={e => setQueryText(e.target.value)}
+              placeholder={isListening ? "Listening... Speak now." : "Ask about your codebase... (e.g., In main.py, what functions are found?)"}
+              disabled={loading}
+              rows={3}
+              className="query-input"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
+            />
+            
+            <div className="query-toolbar">
+              <div className="toolbar-left">
+                <MicButton 
+                  isListening={isListening} 
+                  onClick={handleMicClick}
+                  disabled={loading}
+                />
+                <div className="voice-status-info">
+                  <span className={`status-dot ${isListening ? 'listening' : 'ready'}`}></span>
+                  <span className="status-message">
+                    {isListening 
+                      ? (speechSupported ? "Listening..." : "Listening (Mock)...") 
+                      : "Voice assistant ready"}
+                  </span>
+                </div>
+              </div>
+              
+              <button 
+                type="submit" 
+                disabled={loading || !queryText.trim() || isListening} 
+                className="submit-button"
+              >
+                {loading ? 'Analyzing...' : 'Send Query'}
+              </button>
             </div>
-            <button 
-              type="submit" 
-              disabled={loading || !queryText.trim()} 
-              className="submit-button"
-            >
-              {loading ? 'Analyzing...' : 'Send Query'}
-            </button>
-          </form>
-        </section>
+          </div>
+        </form>
 
         {/* Response Rendering */}
         <ResponseOutput response={response} loading={loading} error={error} />
