@@ -5,11 +5,16 @@ import './HistoryPanel.css'
 const POLL_INTERVAL = 3000 // 3 seconds
 
 function HistoryPanel() {
+  const timerRef = useRef(null)
   const [sessions, setSessions] = useState([])
   const [selectedSession, setSelectedSession] = useState(null)
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [shareFeedback, setShareFeedback] = useState('')
+  const [copiedIndex, setCopiedIndex] = useState(null)
+  const [feedbackMap, setFeedbackMap] = useState({}) // 'like', 'dislike', or null
+  const [showThankYou, setShowThankYou] = useState(false)
   const listRef = useRef(null)
 
   // Parse "User: ...\nAssistant: ..." pairs from the raw history string
@@ -26,6 +31,109 @@ function HistoryPanel() {
       }
     })
   }
+
+  // Handle sharing the conversation
+  const handleShareExchange = async (query, response, index) => {
+    const text = `You: ${query}\nAssistant: ${response}`
+
+    if(navigator.share){
+      try{
+        await navigator.share({
+          title: 'Share DevWhisper Conversation',
+          text: text,
+        })
+
+        setCopiedIndex(index)
+        setTimeout(() => setCopiedIndex(null), 2000)
+        return
+      }catch(err){
+        if(err.name === 'AbortError'){
+          console.log("Share action was aborted")
+        }else{
+          console.error("Error sharing:", err)
+          setCopiedIndex(null)
+        }
+      }
+    }
+
+    try{
+      await navigator.clipboard.writeText(text)
+      setCopiedIndex(index)
+      setTimeout(() => setCopiedIndex(null), 2000)
+    }
+    catch(err){
+      console.warn("Error copying text:", err)
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      document.body.appendChild(textarea)
+      textarea.select()
+      try{
+        document.execCommand('copy')
+        setCopiedIndex(index)
+        setTimeout(() => setCopiedIndex(null), 2000)
+      }catch(err){
+        console.error("Error copying text:", err)
+      }finally{
+        document.body.removeChild(textarea)
+      }
+    }
+  }
+
+  const handleShareSessionLink = async () =>{
+    if(!selectedSession){
+      setShareFeedback('Please select a session to share')
+      setTimeout(() => setShareFeedback(''), 2000)
+      return
+    }
+    const shareUrl = `${window.location.origin}/history?session_id=${encodeURIComponent(selectedSession)}`
+    try{
+      await navigator.clipboard.writeText(shareUrl)
+      setShareFeedback('Share link copied to clipboard')
+      setTimeout(() => setShareFeedback(''), 2000)
+    }catch(err){
+      console.error("Error copying share link:", err)
+      setShareFeedback('Failed to copy share link')
+      setTimeout(() => setShareFeedback(''), 2000)
+    }
+  }
+
+  const handleLike = (index) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    setFeedbackMap(prev => {
+      const current = prev[index]
+      const newVal = current === 'like' ? null : 'like'
+      return { ...prev, [index]: newVal }
+    })
+    setShowThankYou(true)
+    timerRef.current = setTimeout(() => {
+      setShowThankYou(false)
+      timerRef.current = null
+    }, 2500)
+  }
+
+  const handleDislike = (index) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    setFeedbackMap(prev => {
+      const current = prev[index]
+      const newVal = current === 'dislike' ? null : 'dislike'
+      return { ...prev, [index]: newVal }
+    })
+    setShowThankYou(true)
+    timerRef.current = setTimeout(() => {
+      setShowThankYou(false)
+      timerRef.current = null
+    }, 2500)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    console.log('Feedback changed to:', feedbackMap)
+  }, [feedbackMap])
 
   // Poll session list every POLL_INTERVAL ms
   useEffect(() => {
@@ -145,6 +253,12 @@ function HistoryPanel() {
 
       <h2>History</h2>
       <p className="subtitle">Current session queries and responses</p>
+      <div className="header-actions">
+        <button className="share-button" onClick={handleShareSessionLink}>
+          🔗 share conversation link
+        </button>
+        {shareFeedback && <span className="share-feedback">{shareFeedback}</span>}
+      </div>
 
       {/* Session selector — kept for non-sidebar use but hidden when sidebar shows */}
       {sessions.length > 1 && (
@@ -179,10 +293,32 @@ function HistoryPanel() {
               <div className="response">
                 <span className="response-label">DevWhisper</span>
                 <p className="response-text">{item.response}</p>
+                <button
+                  className="share-exchange-btn"
+                  onClick={() => handleShareExchange(item.query, item.response, index)}
+                  aria-label="Share this exchange">
+                  {copiedIndex === index ? 'Copied!' : 'Share'}
+                </button>
+                <button
+                  className={`like-button ${feedbackMap[index] === 'like' ? 'active' : ''}`}
+                  onClick={() => handleLike(index)}
+                >
+                  {feedbackMap[index] === 'like' ? 'Liked' : 'Like'}
+                </button>
+                <button
+                  className={`dislike-button ${feedbackMap[index] === 'dislike' ? 'active' : ''}`}
+                  onClick={() => handleDislike(index)}
+                >
+                  {feedbackMap[index] === 'dislike' ? 'Disliked' : 'Dislike'}
+                </button>
               </div>
             </div>
           ))}
         </div>
+      )}
+
+      {showThankYou && (
+        <div className="thank-you-toast">Thanks for your feedback 🙌</div>
       )}
 
       <Link to="/" className="back-link">← Back to Home</Link>
