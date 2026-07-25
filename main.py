@@ -86,9 +86,48 @@ def get_memory(session_id: str) -> str:
 
 
 # FIX: root route to prevent 502
+@app.get("/")
 @app.post("/")
 async def root():
     return {"status": "ok"}
+
+
+@app.get("/stats")
+async def get_stats():
+    from retriever import client as qdrant_client
+    from config import QDRANT_COLLECTION_NAME
+    try:
+        collection_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+        
+        # Determine number of unique files indexed by checking points
+        unique_files = set()
+        offset = None
+        while True:
+            points, offset = qdrant_client.scroll(
+                collection_name=QDRANT_COLLECTION_NAME,
+                limit=100,
+                with_payload=["file"],
+                with_vectors=False,
+                offset=offset
+            )
+            for point in points:
+                if "file" in point.payload:
+                    unique_files.add(point.payload["file"])
+            if offset is None:
+                break
+                
+        return {
+            "collection_name": QDRANT_COLLECTION_NAME,
+            "chunk_count": collection_info.points_count,
+            "indexed_file_count": len(unique_files),
+            "collection_info": {
+                "status": collection_info.status.name,
+                "vectors_count": collection_info.vectors_count
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching stats: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching statistics")
 
 
 @app.post("/webhook")

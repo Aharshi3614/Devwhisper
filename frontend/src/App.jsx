@@ -13,6 +13,7 @@ function Home() {
   const [error, setError] = useState(null)
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
+  const [backendStatus, setBackendStatus] = useState('checking') // 'online', 'offline', 'checking'
   const recognitionRef = useRef(null)
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
@@ -24,6 +25,28 @@ function Home() {
     sessionStorage.setItem(key, newId)
     return newId
   })
+
+  // Poll backend health status
+  useEffect(() => {
+    let mounted = true
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/health')
+        if (mounted) {
+          setBackendStatus(res.ok ? 'online' : 'offline')
+        }
+      } catch (err) {
+        if (mounted) setBackendStatus('offline')
+      }
+    }
+
+    checkHealth()
+    const interval = setInterval(checkHealth, 10000)
+    return () => {
+      mounted = false
+      clearInterval(interval)
+    }
+  }, [])
 
   // Initialize Speech Recognition API
   useEffect(() => {
@@ -202,8 +225,21 @@ function Home() {
   return (
     <div className="landing-container">
       <header className="hero-header">
-        <h1 className="logo-text">DevWhisper</h1>
-        <p className="subtitle-text">Voice-native developer experience agent</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+          <div>
+            <h1 className="logo-text">DevWhisper</h1>
+            <p className="subtitle-text">Voice-native developer experience agent</p>
+          </div>
+          <div className="backend-status-indicator" style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px' }}>
+            <span style={{
+              width: '10px', height: '10px', borderRadius: '50%',
+              backgroundColor: backendStatus === 'online' ? '#4CAF50' : backendStatus === 'offline' ? '#F44336' : '#FFC107'
+            }}></span>
+            <span style={{ color: 'var(--text-color, #e2e8f0)', opacity: 0.8 }}>
+              {backendStatus === 'online' ? 'Backend Online' : backendStatus === 'offline' ? 'Backend Offline' : 'Checking...'}
+            </span>
+          </div>
+        </div>
       </header>
 
       <main className="query-card">
