@@ -384,7 +384,8 @@ def get_history(session_id: str | None = None):
     - GET /history?session_id=xxx → returns history for that session
     """
     if session_id:
-        history = get_memory(session_id)
+        session = conversation_sessions.get(session_id)
+        history = session["history"] if session else []
         return {"session_id": session_id, "history": history}
     all_session_ids = list(conversation_sessions.keys())
     return {"session_ids": all_session_ids}
