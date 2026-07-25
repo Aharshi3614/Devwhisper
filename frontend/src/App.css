@@ -298,39 +298,40 @@
   display: block;
 }
 
-/* Loading skeleton state */
+/* Loading spinner state */
 .response-container.loading {
   background: var(--bg);
+  padding: 24px;
+}
+
+.loading-spinner-wrapper {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 4px;
 }
 
-.skeleton-title,
-.skeleton-line {
-  background: linear-gradient(90deg, var(--code-bg) 25%, var(--border) 50%, var(--code-bg) 75%);
-  background-size: 200% 100%;
-  animation: loading-pulse 1.5s infinite;
-  border-radius: 4px;
+.loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
 }
 
-.skeleton-title {
-  height: 20px;
-  width: 40%;
+.loading-text {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.01em;
 }
 
-.skeleton-line {
-  height: 14px;
-  width: 100%;
-}
-
-.skeleton-line.short {
-  width: 70%;
-}
-
-@keyframes loading-pulse {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Error Response state */
