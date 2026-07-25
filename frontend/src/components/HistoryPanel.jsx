@@ -127,15 +127,32 @@ function HistoryPanel() {
     }, 2500)
   }
 
-  const handleCopy = (response, index) => {
-    navigator.clipboard.writeText(response)
-      .then(() => {
-        setCopyFeedback(index)
-        setTimeout(() => setCopyFeedback(null), 2000)
-      })
-      .catch(err => {
-        console.error('Error copying text:', err)
-      })
+  const handleCopy = async (response, index) => {
+    // Try clipboard API first
+    try {
+      await navigator.clipboard.writeText(response)
+      setCopyFeedback(index)
+      setTimeout(() => setCopyFeedback(null), 2000)
+      return
+    } catch (err) {
+      console.warn('Clipboard API failed, trying fallback:', err)
+    }
+
+    // Fallback: execCommand
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = response
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      setCopyFeedback(index)
+      setTimeout(() => setCopyFeedback(null), 2000)
+    } catch (err) {
+      console.error('All copy methods failed:', err)
+    }
   }
 
   useEffect(() => {
