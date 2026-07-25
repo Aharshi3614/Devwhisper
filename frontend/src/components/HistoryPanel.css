@@ -170,6 +170,197 @@
   margin: 0 0 24px 0;
 }
 
+/* Header actions — share conversation link */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.share-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.share-button:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.share-button:active {
+  transform: scale(0.96);
+}
+
+.share-feedback {
+  font-size: 13px;
+  color: var(--accent);
+  animation: fadeIn 0.2s ease;
+}
+
+/* Share exchange button on each history item */
+.share-exchange-btn {
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-left: auto;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.share-exchange-btn:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.share-exchange-btn:active {
+  transform: scale(0.95);
+}
+
+/* Feedback buttons — Like / Dislike */
+.like-button,
+.dislike-button {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.like-button:hover {
+  background: rgba(16, 185, 129, 0.08);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.like-button:active {
+  transform: scale(0.95);
+}
+
+.dislike-button:hover {
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.dislike-button:active {
+  transform: scale(0.95);
+}
+
+/* Active (liked / disliked) state */
+.like-button.active {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+.dislike-button.active {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* Copy button */
+.copy-button {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 4px 8px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.copy-button:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.copy-button:active {
+  transform: scale(0.95);
+}
+
+.copy-button.active {
+  background: rgba(99, 102, 241, 0.1);
+  color: #6366f1;
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+/* Thank-you toast */
+.thank-you-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+
+  padding: 12px 24px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  color: var(--text-h);
+  font-size: 14px;
+  font-weight: 500;
+
+  animation: toastIn 0.3s ease, toastOut 0.3s ease 2.2s forwards;
+  pointer-events: none;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes toastOut {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+  }
+}
+
 /* Session selector */
 .session-selector {
   margin-bottom: 20px;
@@ -277,6 +468,7 @@
 .history-item .response {
   display: flex;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .history-item .response-label {
@@ -292,6 +484,7 @@
 }
 
 .history-item .response-text {
+  flex: 1 1 200px;
   font-size: 15px;
   line-height: 1.6;
   color: var(--text);
@@ -387,12 +580,20 @@
     align-self: flex-start;
   }
 
-  .history-item .query-text {
+  .history-item .response-text {
     font-size: 14px;
   }
 
-  .history-item .response-text {
-    font-size: 14px;
+  .share-exchange-btn {
+    align-self: flex-end;
+    margin-left: 0;
+  }
+
+  .like-button,
+  .dislike-button,
+  .copy-button {
+    align-self: flex-end;
+    margin-left: 0;
   }
 
   .history-list {
@@ -416,5 +617,54 @@
 
   .history-item .response-label {
     background: rgba(16, 185, 129, 0.15);
+  }
+
+  .share-button:hover,
+  .share-exchange-btn:hover {
+    background: rgba(192, 132, 252, 0.15);
+    color: #c084fc;
+    border-color: rgba(192, 132, 252, 0.5);
+  }
+
+  .like-button:hover {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border-color: rgba(16, 185, 129, 0.4);
+  }
+
+  .like-button.active {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border-color: rgba(16, 185, 129, 0.6);
+  }
+
+  .dislike-button:hover {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border-color: rgba(239, 68, 68, 0.4);
+  }
+
+  .dislike-button.active {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border-color: rgba(239, 68, 68, 0.6);
+  }
+
+  .copy-button:hover {
+    background: rgba(192, 132, 252, 0.15);
+    color: #c084fc;
+    border-color: rgba(192, 132, 252, 0.5);
+  }
+
+  .copy-button.active {
+    background: rgba(99, 102, 241, 0.2);
+    color: #818cf8;
+    border-color: rgba(99, 102, 241, 0.5);
+  }
+
+  .thank-you-toast {
+    background: #1f2028;
+    border-color: #2e303a;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   }
 }
