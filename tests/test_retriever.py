@@ -129,3 +129,28 @@ def test_retrieve_marks_non_function_snippet_as_unknown(monkeypatch):
     assert "File: settings.py" in context
     assert "Function: unknown" in context
     assert "DEBUG = False" in context
+
+
+def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
+    """Retrieve with include_sources=True returns unique files in order, ignoring 'unknown'."""
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = [0.7]
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point({"file": "a.py", "text": "def a(): pass"}),
+        _point({"file": "b.py", "text": "def b(): pass"}),
+        _point({"file": "a.py", "text": "def a2(): pass"}),  # duplicate
+        _point({"file": "unknown", "text": "def unknown(): pass"}),  # unknown
+        _point({"file": None, "text": "def empty(): pass"}),  # none/empty
+    ]
+
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    context, sources = retriever.retrieve("test query", include_sources=True)
+
+    assert isinstance(context, str)
+    assert "File: a.py" in context
+    assert "File: b.py" in context
+    assert sources == ["a.py", "b.py"]
