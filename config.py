@@ -58,7 +58,7 @@ RETRIEVAL_TOP_K: Final = _env_int("RETRIEVAL_TOP_K", 6)
 # Indexing settings
 INDEX_CHUNK_SIZE: Final = _env_int("INDEX_CHUNK_SIZE", 15)
 INDEX_CHUNK_OVERLAP: Final = _env_int("INDEX_CHUNK_OVERLAP", 3)
-SUPPORTED_EXTENSIONS: Final = frozenset({".py"})
+SUPPORTED_EXTENSIONS: Final = frozenset({".py" ,".md"})
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
 )
