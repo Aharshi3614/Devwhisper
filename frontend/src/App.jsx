@@ -72,12 +72,20 @@ function Home() {
       recognitionRef.current = rec
     }
 
-    return () => {
-    isMountedRef.current = false
-    if (recognitionRef.current) {
-      recognitionRef.current.abort()
-    }
+        return () => {
+      isMountedRef.current = false
 
+      if (recognitionRef.current) {
+        recognitionRef.current.abort()
+      }
+
+      if (mockTimerRef.current) {
+        clearTimeout(mockTimerRef.current)
+        mockTimerRef.current = null
+      }
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
       }
     }
   }, [])
