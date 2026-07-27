@@ -7,9 +7,13 @@ from cache import get as cache_get, put as cache_put
 from handlers import route_command
 from logger import logger
 from errors import error_response
+from indexer import index_directory, progress_state
+from config import SAMPLE_CODEBASE_DIRECTORY
 import json
 import os
 import time
+import asyncio
+import threading
 from datetime import datetime, timezone
 
 app = FastAPI()
@@ -351,6 +355,28 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
         "generated_at": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
         "sessions": sessions,
     }
+
+@app.post("/index/start")
+def start_indexing():
+    """Trigger indexing in a background thread."""
+    if progress_state.get("running"):
+        return error_response(409, "Indexing is already in progress.")
+    threading.Thread(target=index_directory, args=(SAMPLE_CODEBASE_DIRECTORY,), daemon=True).start()
+    return {"status": "started", "message": "Indexing started. Poll /index/progress for updates."}
+
+
+@app.get("/index/progress")
+async def index_progress():
+    """SSE stream that emits progress_state updates until indexing completes."""
+    async def event_stream():
+        while True:
+            state = dict(progress_state)
+            yield f"data: {json.dumps(state)}\n\n"
+            if state["status"] in ("done", "error", "idle"):
+                break
+            await asyncio.sleep(0.5)
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 
 @app.get("/history")
 def get_history(session_id: str | None = None):
