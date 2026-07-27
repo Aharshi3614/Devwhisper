@@ -1,0 +1,4 @@
+{
+  "INDEX_CHUNK_SIZE": 15,
+  "INDEX_CHUNK_OVERLAP": 3
+}
