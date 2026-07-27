@@ -38,6 +38,7 @@
   border-color: var(--accent);
   color: #fff;
   box-shadow: 0 0 15px var(--accent-bg);
+  animation: mic-button-pulse 1.8s ease-in-out infinite alternate;
 }
 
 .mic-icon {
@@ -63,7 +64,19 @@
   opacity: 0;
   z-index: 1;
   pointer-events: none;
-  animation: pulse-ring 1.8s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+  animation: pulse-ring 2.4s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+}
+
+.pulse-ring-glow.ring-1 {
+  animation-delay: 0s;
+}
+
+.pulse-ring-glow.ring-2 {
+  animation-delay: 0.8s;
+}
+
+.pulse-ring-glow.ring-3 {
+  animation-delay: 1.6s;
 }
 
 @keyframes pulse-ring {
@@ -75,7 +88,7 @@
     opacity: 0.4;
   }
   100% {
-    transform: scale(1.4);
+    transform: scale(1.6);
     opacity: 0;
   }
 }
@@ -86,6 +99,15 @@
   }
   50% {
     transform: scale(0.95);
+  }
+}
+
+@keyframes mic-button-pulse {
+  from {
+    box-shadow: 0 0 12px var(--accent-border);
+  }
+  to {
+    box-shadow: 0 0 24px var(--accent);
   }
 }
 
