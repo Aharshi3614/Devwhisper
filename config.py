@@ -47,6 +47,7 @@ EMBEDDING_MODEL_NAME: Final = os.getenv(
     "EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2"
 )
 EMBEDDING_DIMENSIONS: Final = _env_int("EMBEDDING_DIMENSIONS", 384)
+EMBEDDING_VERSION: Final = os.getenv("EMBEDDING_VERSION", "v1")
 QDRANT_COLLECTION_NAME: Final = os.getenv(
     "QDRANT_COLLECTION_NAME", "devwhisper"
 )

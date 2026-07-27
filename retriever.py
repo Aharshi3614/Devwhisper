@@ -1,3 +1,4 @@
+import json
 import os
 
 from qdrant_client import QdrantClient
@@ -5,18 +6,43 @@ from sentence_transformers import SentenceTransformer
 
 from config import (
     EMBEDDING_MODEL_NAME,
+    EMBEDDING_VERSION,
     QDRANT_API_KEY_ENV,
     QDRANT_COLLECTION_NAME,
     QDRANT_SIMILARITY_THRESHOLD,
     QDRANT_URL_ENV,
     RETRIEVAL_TOP_K,
 )
+from logger import logger
 
 client = QdrantClient(
     url=os.getenv(QDRANT_URL_ENV),
     api_key=os.getenv(QDRANT_API_KEY_ENV),
 )
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
+
+
+def check_embedding_version():
+    """Verify that the embedding version matches the configured version."""
+    if not os.path.exists(".index_cache.json"):
+        return
+    try:
+        with open(".index_cache.json", "r", encoding="utf-8") as f:
+            cache_data = json.load(f)
+    except Exception:
+        # Gracefully handle corrupted metadata
+        logger.warning("Corrupted repository metadata encountered.")
+        return
+
+    if isinstance(cache_data, dict):
+        metadata = cache_data.get("_metadata")
+        if metadata and isinstance(metadata, dict):
+            repo_version = metadata.get("embedding_version")
+            if repo_version and repo_version != EMBEDDING_VERSION:
+                logger.warning(
+                    f"Embedding version mismatch detected (repository version: {repo_version}, "
+                    f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
+                )
 
 
 def retrieve(
@@ -29,6 +55,7 @@ def retrieve(
     Encodes ``query`` into an embedding, performs a Qdrant vector search, and
     formats the top matches into a human-readable context string.
     """
+    check_embedding_version()
     vector = embedder.encode(query).tolist()
     results = client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,

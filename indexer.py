@@ -11,6 +11,7 @@ from sentence_transformers import SentenceTransformer
 from config import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_MODEL_NAME,
+    EMBEDDING_VERSION,
     INDEX_CHUNK_OVERLAP,
     INDEX_CHUNK_SIZE,
     QDRANT_API_KEY_ENV,
@@ -67,8 +68,22 @@ def chunk_file(filepath, chunk_size=INDEX_CHUNK_SIZE):
 def index_directory(directory):
     before_cache_data = {}
     if os.path.exists(".index_cache.json"):
-        with open(".index_cache.json", "r", encoding="utf-8") as f:
-            before_cache_data = json.load(f)
+        try:
+            with open(".index_cache.json", "r", encoding="utf-8") as f:
+                before_cache_data = json.load(f)
+        except Exception:
+            print("Warning: Corrupted .index_cache.json found.")
+
+    if isinstance(before_cache_data, dict):
+        metadata = before_cache_data.get("_metadata")
+        if metadata and isinstance(metadata, dict):
+            repo_version = metadata.get("embedding_version")
+            if repo_version and repo_version != EMBEDDING_VERSION:
+                print(
+                    f"Warning: Embedding version mismatch detected (repository version: {repo_version}, "
+                    f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
+                )
+
     if "--incremental" not in sys.argv or not client.collection_exists(QDRANT_COLLECTION_NAME):
         create_collection()
     points = []
@@ -113,6 +128,10 @@ def index_directory(directory):
         print(f"\nDone. Indexed {len(points)} total chunks into Qdrant.")
     else:
         print("\nNo changes detected. Nothing to upsert.")
+
+    cache_data["_metadata"] = {
+        "embedding_version": EMBEDDING_VERSION
+    }
 
     with open(".index_cache.json", "w", encoding="utf-8") as f:
         json.dump(cache_data, f, indent=2, ensure_ascii=False)

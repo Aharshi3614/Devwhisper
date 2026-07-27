@@ -143,3 +143,24 @@ Step 5  - Codebase is now searchable by voice
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**EMBEDDING VERSIONING & MIGRATION**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### Why Embedding Versioning Was Introduced
+As embedding models or configurations evolve (e.g. dimensions, overlap, model name, chunk sizes), queries generated using one model/configuration will yield poor results if run against an index created with a different version. Version management prevents sub-optimal semantic search results by warning operators when their current server configurations do not match the indexed database version.
+
+### How Version Mismatches Are Detected
+When a repository is indexed, the current `EMBEDDING_VERSION` (defaulting to `"v1"`) is stored within the repository metadata inside the `.index_cache.json` file. When the repository is loaded/used (e.g., during query retrieval or when starting an indexing run), the system parses the stored version metadata and compares it against the currently active server configuration. If they differ, a non-blocking warning is logged.
+
+### When Repositories Should Be Re-Indexed
+A repository should be re-indexed when the embedding version in the configuration changes (e.g., updating `EMBEDDING_VERSION` in config or changing the underlying model/chunk size settings). Re-indexing updates the vector database and metadata cache to align with the new embedding configurations.
+
+### How Legacy Repositories Are Handled
+Legacy repositories created before version management do not contain embedding version fields. To maintain backward compatibility and prevent immediate forced migration, legacy repositories are gracefully accepted. They are treated as valid, allowing retrieval and incremental indexing to continue without blocking operations or raising mismatch warnings.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
