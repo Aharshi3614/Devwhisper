@@ -4,6 +4,24 @@ import './HistoryPanel.css'
 
 const POLL_INTERVAL = 3000 // 3 seconds
 
+function highlightText(text, highlight) {
+  if (!highlight.trim()) return text
+  const escaped = highlight.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  const parts = text.split(regex)
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === highlight.toLowerCase() ? (
+          <mark key={i} className="search-highlight">{part}</mark>
+        ) : (
+          part
+        )
+      )}
+    </>
+  )
+}
+
 function HistoryPanel() {
   const timerRef = useRef(null)
   const [sessions, setSessions] = useState([])
@@ -16,7 +34,12 @@ function HistoryPanel() {
   const [feedbackMap, setFeedbackMap] = useState({}) // 'like', 'dislike', or null
   const [showThankYou, setShowThankYou] = useState(false)
   const [copyFeedback, setCopyFeedback] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const listRef = useRef(null)
+
+  const filteredSessions = sessions.filter(id =>
+    id.toLowerCase().includes(searchQuery.toLowerCase())
+  )
 
   // Parse "User: ...\nAssistant: ..." entries from the history array
   function parseHistory(historyList) {
@@ -257,17 +280,37 @@ function HistoryPanel() {
           <h3>Sessions</h3>
           <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>✕</button>
         </div>
+        <div className="sidebar-search">
+          <input
+            type="text"
+            className="search-input"
+            placeholder="Search sessions..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button 
+              className="search-clear" 
+              onClick={() => setSearchQuery('')}
+              aria-label="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <nav className="sidebar-list">
-          {sessions.length === 0 ? (
-            <p className="sidebar-empty">No sessions yet</p>
+          {filteredSessions.length === 0 ? (
+            <p className="sidebar-empty">
+              {sessions.length === 0 ? "No sessions yet" : "No matching sessions"}
+            </p>
           ) : (
-            sessions.map(id => (
+            filteredSessions.map(id => (
               <button
                 key={id}
                 className={`sidebar-item ${id === selectedSession ? 'sidebar-item--active' : ''}`}
                 onClick={() => { setSelectedSession(id); setSidebarOpen(false) }}
               >
-                {id}
+                {highlightText(id, searchQuery)}
               </button>
             ))
           )}

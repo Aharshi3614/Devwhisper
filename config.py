@@ -4,12 +4,40 @@ Non-secret application defaults live here so model, Qdrant, indexing, and LLM
 settings are maintained in one place. Secrets remain in environment variables.
 """
 
+import json
 import os
+from pathlib import Path
 from typing import Final
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _load_json_config() -> dict:
+    """Load values from config.json (project root) if it exists."""
+    cfg_path = Path(__file__).resolve().parent / "config.json"
+    if cfg_path.is_file():
+        try:
+            with open(cfg_path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            print(f"Warning: failed to parse {cfg_path}, ignoring")
+    return {}
+
+
+_JSON_CFG: Final = _load_json_config()
+
+
+def _env_or_json(name: str, default: int) -> int:
+    """Read from env var first, then config.json, then default."""
+    raw = os.getenv(name) or _JSON_CFG.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
 def _env_int(name: str, default: int) -> int:
@@ -56,8 +84,23 @@ QDRANT_SIMILARITY_THRESHOLD: Final = _env_float(
 RETRIEVAL_TOP_K: Final = _env_int("RETRIEVAL_TOP_K", 6)
 
 # Indexing settings
-INDEX_CHUNK_SIZE: Final = _env_int("INDEX_CHUNK_SIZE", 15)
-INDEX_CHUNK_OVERLAP: Final = _env_int("INDEX_CHUNK_OVERLAP", 3)
+INDEX_CHUNK_SIZE: Final = _env_or_json("INDEX_CHUNK_SIZE", 15)
+INDEX_CHUNK_OVERLAP: Final = _env_or_json("INDEX_CHUNK_OVERLAP", 3)
+
+# Validate indexing configuration
+if INDEX_CHUNK_SIZE < 1:
+    raise ValueError(
+        f"INDEX_CHUNK_SIZE must be >= 1, got {INDEX_CHUNK_SIZE}"
+    )
+if INDEX_CHUNK_OVERLAP < 0:
+    raise ValueError(
+        f"INDEX_CHUNK_OVERLAP must be >= 0, got {INDEX_CHUNK_OVERLAP}"
+    )
+if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
+    raise ValueError(
+        f"INDEX_CHUNK_SIZE ({INDEX_CHUNK_SIZE}) must be greater than "
+        f"INDEX_CHUNK_OVERLAP ({INDEX_CHUNK_OVERLAP})"
+    )
 SUPPORTED_EXTENSIONS: Final = frozenset({".py" ,".md"})
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
