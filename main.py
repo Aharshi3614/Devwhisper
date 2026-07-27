@@ -6,6 +6,7 @@ from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
 from logger import logger
+from errors import error_response
 import json
 import os
 import time
@@ -152,22 +153,12 @@ async def vapi_webhook(request: Request):
                         params = json.loads(params)
                     except json.JSONDecodeError as e:
                         logger.error("Failed to parse command parameters: %s", e)
-                        return JSONResponse(
-                            status_code=400,
-                            content={
-  "status": "error",
-  "message": "Sorry, I didn't understand that command. Try rephrasing."
-})
+                        return error_response(400, "Invalid JSON in command parameters. Try rephrasing.")
 
                 if fn_name == "query_codebase":
                     query = params.get("query", "")
                     if not query:
-                        return JSONResponse(
-                            status_code=400,
-                            content={
-    "status": "error",
-    "message": "Sorry, I didn't understand that command. Try rephrasing."
-})
+                        return error_response(400, "Query parameter is required and cannot be empty.")
 
                     # --- Cache lookup ---
                     # Attempt to serve the response from cache. This skips
@@ -209,12 +200,7 @@ async def vapi_webhook(request: Request):
 
     except Exception as e:
         logger.error("SERVER ERROR", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-            "status": "error",
-            "message": "An unexpected error occurred."
-        })
+        return error_response(500, "An unexpected server error occurred. Please try again.")
 
 
 @app.get("/health")
@@ -237,10 +223,7 @@ async def stream_query(request: Request):
         session_id = body.get("sessionId", "default")
 
         if not query:
-            return JSONResponse(
-                status_code=400,
-                content={"status": "error", "message": "Query is required."}
-            )
+            return error_response(400, "Query parameter is required and cannot be empty.")
 
         # Cache lookup
         cached = cache_get(query)
@@ -280,13 +263,7 @@ async def stream_query(request: Request):
 
     except Exception as e:
         logger.error("SERVER STREAM ERROR", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": "An unexpected error occurred."
-            }
-        )
+        return error_response(500, "An unexpected server error occurred in the stream. Please try again.")
 
 
 # --- Admin endpoints ---------------------------------------------------
