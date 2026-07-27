@@ -22,27 +22,35 @@ client = QdrantClient(
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 
 
-def check_embedding_version():
-    """Verify that the embedding version matches the configured version."""
-    if not os.path.exists(".index_cache.json"):
-        return
+def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
+    """Retrieve project-level repository metadata."""
+    if not os.path.exists(metadata_path):
+        return {}
     try:
-        with open(".index_cache.json", "r", encoding="utf-8") as f:
+        with open(metadata_path, "r", encoding="utf-8") as f:
             cache_data = json.load(f)
     except Exception:
         # Gracefully handle corrupted metadata
         logger.warning("Corrupted repository metadata encountered.")
-        return
+        return {}
 
     if isinstance(cache_data, dict):
         metadata = cache_data.get("_metadata")
-        if metadata and isinstance(metadata, dict):
-            repo_version = metadata.get("embedding_version")
-            if repo_version and repo_version != EMBEDDING_VERSION:
-                logger.warning(
-                    f"Embedding version mismatch detected (repository version: {repo_version}, "
-                    f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
-                )
+        if isinstance(metadata, dict):
+            return metadata
+    return {}
+
+
+def check_embedding_version():
+    """Verify that the embedding version matches the configured version."""
+    metadata = get_repository_metadata()
+    if metadata:
+        repo_version = metadata.get("embedding_version")
+        if repo_version and repo_version != EMBEDDING_VERSION:
+            logger.warning(
+                f"Embedding version mismatch detected (repository version: {repo_version}, "
+                f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
+            )
 
 
 def retrieve(

@@ -3,6 +3,7 @@ import os
 import uuid
 import sys
 import json
+from datetime import datetime, timezone
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -130,6 +131,10 @@ def index_directory(directory):
         print("\nNo changes detected. Nothing to upsert.")
 
     cache_data["_metadata"] = {
+        "repository_name": os.path.basename(os.path.abspath(directory)),
+        "indexing_timestamp": datetime.now(timezone.utc).isoformat(),
+        "indexed_file_count": len(cache_data),
+        "embedding_model": EMBEDDING_MODEL_NAME,
         "embedding_version": EMBEDDING_VERSION
     }
 
