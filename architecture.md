@@ -143,3 +143,57 @@ Step 5  - Codebase is now searchable by voice
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**EMBEDDING VERSIONING & MIGRATION**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### Why Embedding Versioning Was Introduced
+As embedding models or configurations evolve (e.g. dimensions, overlap, model name, chunk sizes), queries generated using one model/configuration will yield poor results if run against an index created with a different version. Version management prevents sub-optimal semantic search results by warning operators when their current server configurations do not match the indexed database version.
+
+### How Version Mismatches Are Detected
+When a repository is indexed, the current `EMBEDDING_VERSION` (defaulting to `"v1"`) is stored within the repository metadata inside the `.index_cache.json` file. When the repository is loaded/used (e.g., during query retrieval or when starting an indexing run), the system parses the stored version metadata and compares it against the currently active server configuration. If they differ, a non-blocking warning is logged.
+
+### When Repositories Should Be Re-Indexed
+A repository should be re-indexed when the embedding version in the configuration changes (e.g., updating `EMBEDDING_VERSION` in config or changing the underlying model/chunk size settings). Re-indexing updates the vector database and metadata cache to align with the new embedding configurations.
+
+### How Legacy Repositories Are Handled
+Legacy repositories created before version management do not contain embedding version fields. To maintain backward compatibility and prevent immediate forced migration, legacy repositories are gracefully accepted. They are treated as valid, allowing retrieval and incremental indexing to continue without blocking operations or raising mismatch warnings.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**REPOSITORY-LEVEL METADATA**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### Repository Metadata Structure
+Repository-level metadata is serialized as a JSON object under the `_metadata` key inside the `.index_cache.json` file. The structure comprises:
+- `repository_name` (string): The basename of the codebase directory path.
+- `indexing_timestamp` (string): ISO-8601 UTC timestamp of when the repository was indexed.
+- `indexed_file_count` (integer): Total number of files currently indexed.
+- `embedding_model` (string): The sentence-transformers embedding model name configured.
+- `embedding_version` (string): The configured version of the embedding logic/schema.
+
+### Meaning of Each Metadata Field
+- **`repository_name`**: Identifies which repository/folder was indexed, facilitating organization when managing multiple workspaces.
+- **`indexing_timestamp`**: Registers when the index was last built or updated, allowing operators to track freshness.
+- **`indexed_file_count`**: Specifies the number of unique files included in the index, which helps verify indexing coverage.
+- **`embedding_model`**: The model identifier used to encode code chunks, ensuring downstream queries encode text with matching dimensions.
+- **`embedding_version`**: The indexing version identifier used for detecting configuration mismatches.
+
+### When Metadata Is Created
+Metadata is created or updated at the end of every indexing execution (e.g. running `python indexer.py`). Any re-indexing run updates the `indexing_timestamp` and `indexed_file_count` to reflect the latest state.
+
+### How Metadata Is Retrieved
+Downstream retrieval components use the helper function `get_repository_metadata(metadata_path)` in `retriever.py` to parse and load the `_metadata` dictionary from the cache file.
+
+### Legacy Repository Compatibility
+If a legacy repository index is loaded, its `.index_cache.json` does not contain the `_metadata` field. The retrieval logic gracefully returns an empty dictionary when querying repository metadata, and proceeds with query processing without raising errors.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
