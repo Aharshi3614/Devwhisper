@@ -14,6 +14,9 @@ function Home() {
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
   const recognitionRef = useRef(null)
+  const isMountedRef = useRef(false)
+  const abortControllerRef = useRef(null)
+  const mockTimerRef = useRef(null)
 
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
@@ -70,10 +73,10 @@ function Home() {
     }
 
     return () => {
-      isMountedRef.current = false
-      if (recognitionRef.current) {
-        recognitionRef.current.abort()
-      }
+    isMountedRef.current = false
+    if (recognitionRef.current) {
+      recognitionRef.current.abort()
+    }
 
       }
     }
