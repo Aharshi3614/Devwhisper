@@ -12,7 +12,11 @@ export default function MicButton({ isListening, onClick, disabled }) {
     >
       <span className="mic-icon">🎙️</span>
       {isListening && (
-        <span className="pulse-ring-glow"></span>
+        <>
+          <span className="pulse-ring-glow ring-1"></span>
+          <span className="pulse-ring-glow ring-2"></span>
+          <span className="pulse-ring-glow ring-3"></span>
+        </>
       )}
     </button>
   )
