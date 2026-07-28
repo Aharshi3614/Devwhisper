@@ -4,6 +4,24 @@ import './HistoryPanel.css'
 
 const POLL_INTERVAL = 3000 // 3 seconds
 
+function highlightText(text, highlight) {
+  if (!highlight.trim()) return text
+  const escaped = highlight.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  const parts = text.split(regex)
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === highlight.toLowerCase() ? (
+          <mark key={i} className="search-highlight">{part}</mark>
+        ) : (
+          part
+        )
+      )}
+    </>
+  )
+}
+
 function HistoryPanel() {
   const timerRef = useRef(null)
   const [sessions, setSessions] = useState([])
@@ -15,12 +33,19 @@ function HistoryPanel() {
   const [copiedIndex, setCopiedIndex] = useState(null)
   const [feedbackMap, setFeedbackMap] = useState({}) // 'like', 'dislike', or null
   const [showThankYou, setShowThankYou] = useState(false)
+  const [copyFeedback, setCopyFeedback] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const listRef = useRef(null)
 
-  // Parse "User: ...\nAssistant: ..." pairs from the raw history string
-  function parseHistory(raw) {
-    return raw.split('\n\n').filter(Boolean).map(block => {
-      const lines = block.split('\n')
+  const filteredSessions = sessions.filter(id =>
+    id.toLowerCase().includes(searchQuery.toLowerCase())
+  )
+
+  // Parse "User: ...\nAssistant: ..." entries from the history array
+  function parseHistory(historyList) {
+    if (!Array.isArray(historyList)) return []
+    return historyList.map(entry => {
+      const lines = entry.split('\n')
       const userLine = lines.find(l => l.startsWith('User: '))
       const asstIndex = lines.findIndex(l => l.startsWith('Assistant: '))
       return {
@@ -125,6 +150,34 @@ function HistoryPanel() {
     }, 2500)
   }
 
+  const handleCopy = async (response, index) => {
+    // Try clipboard API first
+    try {
+      await navigator.clipboard.writeText(response)
+      setCopyFeedback(index)
+      setTimeout(() => setCopyFeedback(null), 2000)
+      return
+    } catch (err) {
+      console.warn('Clipboard API failed, trying fallback:', err)
+    }
+
+    // Fallback: execCommand
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = response
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      setCopyFeedback(index)
+      setTimeout(() => setCopyFeedback(null), 2000)
+    } catch (err) {
+      console.error('All copy methods failed:', err)
+    }
+  }
+
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
@@ -182,7 +235,7 @@ function HistoryPanel() {
         .then(res => res.json())
         .then(data => {
           if (!active) return
-          const parsed = parseHistory(data.history || '')
+          const parsed = parseHistory(data.history || [])
           setHistory(prev => {
             // Only update if content actually changed
             if (prev.length === parsed.length &&
@@ -227,17 +280,37 @@ function HistoryPanel() {
           <h3>Sessions</h3>
           <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>✕</button>
         </div>
+        <div className="sidebar-search">
+          <input
+            type="text"
+            className="search-input"
+            placeholder="Search sessions..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button 
+              className="search-clear" 
+              onClick={() => setSearchQuery('')}
+              aria-label="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <nav className="sidebar-list">
-          {sessions.length === 0 ? (
-            <p className="sidebar-empty">No sessions yet</p>
+          {filteredSessions.length === 0 ? (
+            <p className="sidebar-empty">
+              {sessions.length === 0 ? "No sessions yet" : "No matching sessions"}
+            </p>
           ) : (
-            sessions.map(id => (
+            filteredSessions.map(id => (
               <button
                 key={id}
                 className={`sidebar-item ${id === selectedSession ? 'sidebar-item--active' : ''}`}
                 onClick={() => { setSelectedSession(id); setSidebarOpen(false) }}
               >
-                {id}
+                {highlightText(id, searchQuery)}
               </button>
             ))
           )}
@@ -303,13 +376,19 @@ function HistoryPanel() {
                   className={`like-button ${feedbackMap[index] === 'like' ? 'active' : ''}`}
                   onClick={() => handleLike(index)}
                 >
-                  {feedbackMap[index] === 'like' ? 'Liked' : 'Like'}
+                  👍
                 </button>
                 <button
                   className={`dislike-button ${feedbackMap[index] === 'dislike' ? 'active' : ''}`}
                   onClick={() => handleDislike(index)}
                 >
-                  {feedbackMap[index] === 'dislike' ? 'Disliked' : 'Dislike'}
+                  👎
+                </button>
+                <button
+                  className={`copy-button ${copyFeedback === index ? 'active' : ''}`}
+                  onClick={() => handleCopy(item.response, index)}
+                >
+                  {copyFeedback === index ? '✔' : '📋︎'}
                 </button>
               </div>
             </div>

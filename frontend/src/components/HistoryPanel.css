@@ -287,6 +287,37 @@
   border-color: rgba(239, 68, 68, 0.5);
 }
 
+/* Copy button */
+.copy-button {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 4px 8px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.copy-button:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.copy-button:active {
+  transform: scale(0.95);
+}
+
+.copy-button.active {
+  background: rgba(99, 102, 241, 0.1);
+  color: #6366f1;
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
 /* Thank-you toast */
 .thank-you-toast {
   position: fixed;
@@ -501,6 +532,59 @@
   opacity: 0.7;
 }
 
+/* Sidebar Search */
+.sidebar-search {
+  position: relative;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+}
+
+.search-input {
+  width: 100%;
+  padding: 8px 32px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.search-clear {
+  position: absolute;
+  right: 22px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.search-clear:hover {
+  color: var(--text-h);
+}
+
+.search-highlight {
+  background-color: var(--accent-bg);
+  color: var(--accent);
+  border-bottom: 1px solid var(--accent-border);
+  font-weight: 600;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
 /* --- Responsive --- */
 
 /* Tablet (~768px) */
@@ -559,7 +643,8 @@
   }
 
   .like-button,
-  .dislike-button {
+  .dislike-button,
+  .copy-button {
     align-self: flex-end;
     margin-left: 0;
   }
@@ -616,6 +701,18 @@
     background: rgba(239, 68, 68, 0.2);
     color: #f87171;
     border-color: rgba(239, 68, 68, 0.6);
+  }
+
+  .copy-button:hover {
+    background: rgba(192, 132, 252, 0.15);
+    color: #c084fc;
+    border-color: rgba(192, 132, 252, 0.5);
+  }
+
+  .copy-button.active {
+    background: rgba(99, 102, 241, 0.2);
+    color: #818cf8;
+    border-color: rgba(99, 102, 241, 0.5);
   }
 
   .thank-you-toast {

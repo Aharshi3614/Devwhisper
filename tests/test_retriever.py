@@ -13,8 +13,10 @@ def _point(payload):
 
 def test_retrieve_formats_ranked_results(monkeypatch):
     """Relevant Qdrant points are returned as readable, ranked context."""
+    vector = [0.1, 0.2, 0.3]
+
     mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.1, 0.2, 0.3]
+    mock_embedder.encode.return_value.tolist.return_value = vector
 
     mock_client = MagicMock()
     mock_client.query_points.return_value.points = [
@@ -42,10 +44,11 @@ def test_retrieve_formats_ranked_results(monkeypatch):
     mock_embedder.encode.assert_called_once_with("How is the data prepared?")
     mock_client.query_points.assert_called_once_with(
         collection_name="devwhisper",
-        query=[0.1, 0.2, 0.3],
+        query=vector,
         limit=2,
-        score_threshold=0.0
+        score_threshold=0.0,
     )
+
     assert "Result 1:" in context
     assert "File: pipeline.py" in context
     assert "Function: preprocess" in context
@@ -132,7 +135,7 @@ def test_retrieve_marks_non_function_snippet_as_unknown(monkeypatch):
 
 
 def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
-    """Retrieve with include_sources=True returns unique files in order, ignoring 'unknown'."""
+    """Return unique source files in order when sources are requested."""
     mock_embedder = MagicMock()
     mock_embedder.encode.return_value.tolist.return_value = [0.7]
 
@@ -140,9 +143,9 @@ def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
     mock_client.query_points.return_value.points = [
         _point({"file": "a.py", "text": "def a(): pass"}),
         _point({"file": "b.py", "text": "def b(): pass"}),
-        _point({"file": "a.py", "text": "def a2(): pass"}),  # duplicate
-        _point({"file": "unknown", "text": "def unknown(): pass"}),  # unknown
-        _point({"file": None, "text": "def empty(): pass"}),  # none/empty
+        _point({"file": "a.py", "text": "def a2(): pass"}),
+        _point({"file": "unknown", "text": "def unknown(): pass"}),
+        _point({"file": None, "text": "def empty(): pass"}),
     ]
 
     monkeypatch.setattr(retriever, "embedder", mock_embedder)
