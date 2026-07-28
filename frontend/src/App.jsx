@@ -130,6 +130,29 @@ function Home() {
     }
   }
 
+  const handleClearChat = async () => {
+    if (loading) return
+
+    setResponse('')
+    setQueryText('')
+    setError(null)
+
+    const newId = 'web-' + Math.random().toString(36).substring(2, 9)
+    sessionStorage.setItem('devwhisper_session_id', newId)
+    setSessionId(newId)
+
+    try {
+      const res = await fetch('/reset', {
+        method: 'POST'
+      })
+      if (!res.ok) {
+        console.error('Failed to reset conversation memory.')
+      }
+    } catch (err) {
+      console.error('Error resetting conversation memory:', err)
+    }
+  }
+
   const handleWebhookFallback = async (fallbackQuery) => {
     const q = fallbackQuery !== undefined ? fallbackQuery : queryText
     const payload = {
@@ -293,13 +316,24 @@ function Home() {
                 </div>
               </div>
               
-              <button 
-                type="submit" 
-                disabled={loading || !queryText.trim() || isListening} 
-                className="submit-button"
-              >
-                {loading ? 'Analyzing...' : 'Send Query'}
-              </button>
+              <div className="toolbar-right">
+                <button
+                  type="button"
+                  onClick={handleClearChat}
+                  disabled={loading || (!queryText.trim() && !response && !error)}
+                  className="clear-button"
+                  title="Clear conversation"
+                >
+                  Clear Chat
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={loading || !queryText.trim() || isListening} 
+                  className="submit-button"
+                >
+                  {loading ? 'Analyzing...' : 'Send Query'}
+                </button>
+              </div>
             </div>
           </div>
         </form>
