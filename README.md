@@ -116,12 +116,15 @@ Developer hears the response
    ```bash
    python indexer.py
    ```
+   The indexer now runs a post-build validation pass that checks the stored
+   chunk count, verifies chunk metadata, and reports any missing or stale
+   points in Qdrant. If the report flags inconsistencies, fix the source files
+   or reindex to rebuild the collection.
 
 7. **Start the server**
    ```bash
    uvicorn main:app --reload --port 8000
    ```
-3. Create a `.env` file in the root folder:`cp ./.env.example ./.env`
 
 8. **Expose it publicly**
    ```bash
@@ -181,11 +184,27 @@ You can test DevWhisper's conversation flow directly from your terminal — with
 | File / Folder | Purpose |
 |---|---|
 | `main.py` | FastAPI webhook server, handles all Vapi events |
-| `indexer.py` | Chunks your code files and uploads them to Qdrant |
+| `indexer.py` | Chunks your code files, uploads them to Qdrant, and validates the index |
 | `retriever.py` | Takes a query and finds the most relevant code chunks |
 | `llm.py` | Sends the query and context to Groq and returns the answer |
 | `test_client.py` | Standalone CLI client for testing without Vapi |
 | `sample_codebase/` | Put your own Python project files here |
+
+---
+
+## Index Validation
+
+DevWhisper now validates the vector index after indexing completes. The
+validation pass checks:
+
+- Expected chunk count versus the number of stored Qdrant points
+- Required chunk metadata such as `file`, `start_line`, `source_path`,
+  `chunk_index`, `chunk_count`, `chunk_hash`, and `file_hash`
+- Missing, unexpected, or malformed points
+- Stale chunks whose source file hash no longer matches the stored metadata
+
+If validation fails, the console output includes a short diagnostic summary
+followed by the specific point IDs or metadata fields that need attention.
 
 ---
 

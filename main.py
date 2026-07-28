@@ -29,8 +29,14 @@ MAX_HISTORY_PER_SESSION = 5
 
 @app.on_event("startup")
 async def startup_event():
-    embedder.encode("warmup query")
-    logger.info("Embedder warmed up and ready!")
+    try:
+        embedder.encode("warmup query")
+        logger.info("Embedder warmed up and ready!")
+    except Exception:
+        logger.warning(
+            "Embedder warmup failed during startup; continuing with lazy runtime usage.",
+            exc_info=True,
+        )
 
 
 @app.on_event("shutdown")

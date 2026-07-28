@@ -1,8 +1,10 @@
 import hashlib
-import os
-import uuid
-import sys
 import json
+import os
+import sys
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -27,19 +29,82 @@ client = QdrantClient(
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 
-def create_collection():
-    try:
-        client.delete_collection(QDRANT_COLLECTION_NAME)
-    except Exception:
-        pass
+@dataclass
+class IndexValidationReport:
+    """Summary of index integrity checks for the current codebase."""
 
-    client.create_collection(
-        collection_name=QDRANT_COLLECTION_NAME,
-        vectors_config=VectorParams(
-            size=EMBEDDING_DIMENSIONS,
-            distance=Distance.COSINE,
-        ),
+    expected_chunk_count: int = 0
+    indexed_chunk_count: int = 0
+    missing_point_ids: list[str] = field(default_factory=list)
+    unexpected_point_ids: list[str] = field(default_factory=list)
+    metadata_issues: list[str] = field(default_factory=list)
+    file_issues: list[str] = field(default_factory=list)
+    collection_issues: list[str] = field(default_factory=list)
+
+    @property
+    def is_valid(self) -> bool:
+        return not (
+            self.missing_point_ids
+            or self.unexpected_point_ids
+            or self.metadata_issues
+            or self.file_issues
+            or self.collection_issues
+        )
+
+
+def _safe_load_json(path: str) -> dict[str, Any]:
+    """Load a JSON file but treat missing or broken caches as empty."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        print(f"Warning: could not read {path}; rebuilding cache from disk.")
+        return {}
+
+
+def _stable_point_id(path: str, start_line: int) -> str:
+    """Generate a stable identifier for a file chunk."""
+    unique_str = f"{path}_{start_line}"
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
+
+
+def _text_hash(text: str) -> str:
+    """Compute a deterministic content hash for chunk payload validation."""
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _file_hash(filepath: str) -> str:
+    """Compute a file hash for stale-index detection."""
+    hash_md5 = hashlib.md5()
+    with open(filepath, "rb") as handle:
+        for chunk in iter(lambda: handle.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+
+def _build_chunk_payload(
+    path: str,
+    chunk: dict[str, Any],
+    chunk_index: int,
+    chunk_count: int,
+    file_hash: str,
+) -> dict[str, Any]:
+    """Attach metadata needed for validation to each indexed chunk."""
+    text = chunk["text"]
+    payload = dict(chunk)
+    payload.update(
+        {
+            "source_path": path,
+            "chunk_index": chunk_index,
+            "chunk_count": chunk_count,
+            "chunk_hash": _text_hash(text),
+            "file_hash": file_hash,
+            "end_line": chunk["start_line"] + max(len(text.splitlines()) - 1, 0),
+        }
     )
+    return payload
 
 
 def chunk_file(filepath, chunk_size=INDEX_CHUNK_SIZE):
@@ -64,13 +129,221 @@ def chunk_file(filepath, chunk_size=INDEX_CHUNK_SIZE):
     return chunks
 
 
+def _collect_expected_index_state(
+    directory: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """Build the expected point map for the current filesystem state."""
+    expected_points: dict[str, dict[str, Any]] = {}
+    per_file_counts: dict[str, int] = {}
+
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
+                path = os.path.join(root, file)
+                chunks = chunk_file(path)
+                file_hash = _file_hash(path)
+                per_file_counts[path] = len(chunks)
+                for chunk_index, chunk in enumerate(chunks):
+                    point_id = _stable_point_id(path, chunk["start_line"])
+                    expected_points[point_id] = {
+                        "path": path,
+                        "chunk_index": chunk_index,
+                        "chunk_count": len(chunks),
+                        "payload": _build_chunk_payload(
+                            path,
+                            chunk,
+                            chunk_index,
+                            len(chunks),
+                            file_hash,
+                        ),
+                    }
+
+    return expected_points, per_file_counts
+
+
+def _scroll_collection_points(collection_name: str) -> list[Any]:
+    """Fetch all points from a Qdrant collection using pagination."""
+    points: list[Any] = []
+    offset = None
+
+    while True:
+        page, offset = client.scroll(
+            collection_name=collection_name,
+            limit=256,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        points.extend(page)
+        if offset is None:
+            break
+
+    return points
+
+
+def validate_index(
+    directory: str,
+    collection_name: str = QDRANT_COLLECTION_NAME,
+) -> IndexValidationReport:
+    """Validate that the vector index matches the current codebase state."""
+    report = IndexValidationReport()
+
+    if not client.collection_exists(collection_name):
+        report.collection_issues.append(f"Collection does not exist: {collection_name}")
+        return report
+
+    expected_points, per_file_counts = _collect_expected_index_state(directory)
+    report.expected_chunk_count = len(expected_points)
+
+    try:
+        actual_points = _scroll_collection_points(collection_name)
+    except Exception as exc:
+        report.collection_issues.append(f"Could not read collection '{collection_name}': {exc}")
+        return report
+
+    report.indexed_chunk_count = len(actual_points)
+    actual_by_id = {str(point.id): point for point in actual_points}
+
+    expected_ids = set(expected_points)
+    actual_ids = set(actual_by_id)
+    report.missing_point_ids.extend(sorted(expected_ids - actual_ids))
+    report.unexpected_point_ids.extend(sorted(actual_ids - expected_ids))
+
+    for point_id, point in actual_by_id.items():
+        payload = point.payload or {}
+        if not isinstance(payload, dict):
+            report.metadata_issues.append(f"{point_id}: payload is not a dictionary")
+            continue
+
+        required_fields = (
+            "text",
+            "file",
+            "start_line",
+            "source_path",
+            "chunk_index",
+            "chunk_count",
+            "chunk_hash",
+            "file_hash",
+        )
+
+        missing_fields = [field for field in required_fields if field not in payload]
+        if missing_fields:
+            report.metadata_issues.append(
+                f"{point_id}: missing metadata fields {', '.join(missing_fields)}"
+            )
+            continue
+
+        text = payload.get("text")
+        file_name = payload.get("file")
+        source_path = payload.get("source_path")
+        start_line = payload.get("start_line")
+        chunk_index = payload.get("chunk_index")
+        chunk_count = payload.get("chunk_count")
+        chunk_hash = payload.get("chunk_hash")
+        file_hash = payload.get("file_hash")
+
+        if not isinstance(text, str) or not text.strip():
+            report.metadata_issues.append(f"{point_id}: chunk text is empty or invalid")
+        if not isinstance(file_name, str) or not file_name.strip():
+            report.metadata_issues.append(f"{point_id}: file name is missing or invalid")
+        if not isinstance(source_path, str) or not source_path.strip():
+            report.metadata_issues.append(f"{point_id}: source_path is missing or invalid")
+        elif not os.path.exists(source_path):
+            report.file_issues.append(f"{point_id}: source file is missing on disk: {source_path}")
+        if not isinstance(start_line, int) or start_line < 1:
+            report.metadata_issues.append(f"{point_id}: start_line must be a positive integer")
+        if not isinstance(chunk_index, int) or chunk_index < 0:
+            report.metadata_issues.append(f"{point_id}: chunk_index must be a non-negative integer")
+        if not isinstance(chunk_count, int) or chunk_count < 1:
+            report.metadata_issues.append(f"{point_id}: chunk_count must be a positive integer")
+        if not isinstance(chunk_hash, str) or chunk_hash != _text_hash(text or ""):
+            report.metadata_issues.append(f"{point_id}: chunk_hash does not match chunk text")
+        if not isinstance(file_hash, str):
+            report.metadata_issues.append(f"{point_id}: file_hash is missing or invalid")
+        elif isinstance(source_path, str) and os.path.exists(source_path):
+            current_file_hash = _file_hash(source_path)
+            if current_file_hash != file_hash:
+                report.file_issues.append(
+                    f"{point_id}: file hash differs from the current source file"
+                )
+
+        if isinstance(source_path, str) and isinstance(chunk_count, int):
+            expected_count = per_file_counts.get(source_path)
+            if expected_count is not None and expected_count != chunk_count:
+                report.file_issues.append(
+                    f"{point_id}: chunk_count={chunk_count} but filesystem now has {expected_count} chunks for {source_path}"
+                )
+
+    return report
+
+
+def print_validation_report(report: IndexValidationReport) -> None:
+    """Render a human-readable integrity report to stdout."""
+    print("\nIndex validation report")
+    print("-" * 24)
+    print(f"Expected chunks: {report.expected_chunk_count}")
+    print(f"Indexed chunks: {report.indexed_chunk_count}")
+    print(f"Missing chunks: {len(report.missing_point_ids)}")
+    print(f"Unexpected chunks: {len(report.unexpected_point_ids)}")
+    print(f"Metadata issues: {len(report.metadata_issues)}")
+    print(f"File issues: {len(report.file_issues)}")
+    print(f"Collection issues: {len(report.collection_issues)}")
+
+    if report.collection_issues:
+        print("\nCollection issues:")
+        for issue in report.collection_issues:
+            print(f"  - {issue}")
+
+    if report.metadata_issues:
+        print("\nMetadata issues:")
+        for issue in report.metadata_issues:
+            print(f"  - {issue}")
+
+    if report.file_issues:
+        print("\nFile issues:")
+        for issue in report.file_issues:
+            print(f"  - {issue}")
+
+    if report.missing_point_ids:
+        print("\nMissing point IDs:")
+        for point_id in report.missing_point_ids[:20]:
+            print(f"  - {point_id}")
+        if len(report.missing_point_ids) > 20:
+            print(f"  - ... and {len(report.missing_point_ids) - 20} more")
+
+    if report.unexpected_point_ids:
+        print("\nUnexpected point IDs:")
+        for point_id in report.unexpected_point_ids[:20]:
+            print(f"  - {point_id}")
+        if len(report.unexpected_point_ids) > 20:
+            print(f"  - ... and {len(report.unexpected_point_ids) - 20} more")
+
+    if report.is_valid:
+        print("\nIndex validation passed.")
+    else:
+        print("\nIndex validation found inconsistencies.")
+
+
+def create_collection():
+    try:
+        client.delete_collection(QDRANT_COLLECTION_NAME)
+    except Exception:
+        pass
+
+    client.create_collection(
+        collection_name=QDRANT_COLLECTION_NAME,
+        vectors_config=VectorParams(
+            size=EMBEDDING_DIMENSIONS,
+            distance=Distance.COSINE,
+        ),
+    )
+
+
 def index_directory(directory):
-    before_cache_data = {}
-    if os.path.exists(".index_cache.json"):
-        with open(".index_cache.json", "r", encoding="utf-8") as f:
-            before_cache_data = json.load(f)
+    before_cache_data = _safe_load_json(".index_cache.json")
     if "--incremental" not in sys.argv or not client.collection_exists(QDRANT_COLLECTION_NAME):
         create_collection()
+
     points = []
     cache_data = {}
 
@@ -78,30 +351,36 @@ def index_directory(directory):
         for file in files:
             if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
                 path = os.path.join(root, file)
+                file_hash = get_file_hash(path)
                 cache_data[path] = {
                     "mtime": os.path.getmtime(path),
-                    "hash": get_file_hash(path)
+                    "hash": file_hash,
                 }
 
                 if "--incremental" in sys.argv and path in before_cache_data:
                     if abs(before_cache_data[path]["mtime"] - cache_data[path]["mtime"]) <= 0.001:
                         continue
-                    else:
-                        if before_cache_data[path]["hash"] == cache_data[path]["hash"]:
-                            continue
+                    if before_cache_data[path]["hash"] == cache_data[path]["hash"]:
+                        continue
 
                 chunks = chunk_file(path)
-                print(f" {file} → {len(chunks)} chunks")
+                print(f" {file} -> {len(chunks)} chunks")
 
-                for chunk in chunks:
+                for chunk_index, chunk in enumerate(chunks):
                     vector = embedder.encode(chunk["text"]).tolist()
-                    unique_str = f"{path}_{chunk['start_line']}"
-                    stable_id = str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
+                    stable_id = _stable_point_id(path, chunk["start_line"])
+                    payload = _build_chunk_payload(
+                        path,
+                        chunk,
+                        chunk_index,
+                        len(chunks),
+                        file_hash,
+                    )
                     points.append(
                         PointStruct(
                             id=stable_id,
                             vector=vector,
-                            payload=chunk,
+                            payload=payload,
                         )
                     )
 
@@ -114,15 +393,16 @@ def index_directory(directory):
     else:
         print("\nNo changes detected. Nothing to upsert.")
 
-    with open(".index_cache.json", "w", encoding="utf-8") as f:
-        json.dump(cache_data, f, indent=2, ensure_ascii=False)
+    with open(".index_cache.json", "w", encoding="utf-8") as handle:
+        json.dump(cache_data, handle, indent=2, ensure_ascii=False)
+
+    validation_report = validate_index(directory)
+    print_validation_report(validation_report)
+    return validation_report
+
 
 def get_file_hash(filepath):
-    hash_md5 = hashlib.md5()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
+    return _file_hash(filepath)
 
 
 if __name__ == "__main__":
