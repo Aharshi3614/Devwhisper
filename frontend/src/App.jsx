@@ -14,8 +14,10 @@ function Home() {
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
   const recognitionRef = useRef(null)
+  const isMountedRef = useRef(false)
   const abortControllerRef = useRef(null)
-  const isMountedRef = useRef(true)
+  const mockTimerRef = useRef(null)
+
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
   const [sessionId, setSessionId] = useState(() => {
@@ -70,11 +72,18 @@ function Home() {
       recognitionRef.current = rec
     }
 
-    return () => {
+        return () => {
       isMountedRef.current = false
+
       if (recognitionRef.current) {
         recognitionRef.current.abort()
       }
+
+      if (mockTimerRef.current) {
+        clearTimeout(mockTimerRef.current)
+        mockTimerRef.current = null
+      }
+
       if (abortControllerRef.current) {
         abortControllerRef.current.abort()
       }
@@ -97,10 +106,17 @@ function Home() {
       // Mock Fallback for browsers/environments without SpeechRecognition
       if (isListening) {
         setIsListening(false)
+        if (mockTimerRef.current) {
+          clearTimeout(mockTimerRef.current)
+          mockTimerRef.current = null
+        }
       } else {
         setIsListening(true)
         setQueryText('Listening...')
-        setTimeout(() => {
+        if (mockTimerRef.current) {
+          clearTimeout(mockTimerRef.current)
+        }
+        mockTimerRef.current = setTimeout(() => {
           setIsListening(prev => {
             if (prev) {
               setQueryText('In main.py, what functions are found?')
@@ -108,6 +124,7 @@ function Home() {
             }
             return prev
           })
+          mockTimerRef.current = null
         }, 3000)
       }
     }
