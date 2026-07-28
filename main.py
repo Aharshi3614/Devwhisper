@@ -6,9 +6,14 @@ from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
 from logger import logger
+from errors import error_response
+from indexer import index_directory, progress_state
+from config import SAMPLE_CODEBASE_DIRECTORY
 import json
 import os
 import time
+import asyncio
+import threading
 from datetime import datetime, timezone
 
 app = FastAPI()
@@ -152,22 +157,12 @@ async def vapi_webhook(request: Request):
                         params = json.loads(params)
                     except json.JSONDecodeError as e:
                         logger.error("Failed to parse command parameters: %s", e)
-                        return JSONResponse(
-                            status_code=400,
-                            content={
-  "status": "error",
-  "message": "Sorry, I didn't understand that command. Try rephrasing."
-})
+                        return error_response(400, "Invalid JSON in command parameters. Try rephrasing.")
 
                 if fn_name == "query_codebase":
                     query = params.get("query", "")
                     if not query:
-                        return JSONResponse(
-                            status_code=400,
-                            content={
-    "status": "error",
-    "message": "Sorry, I didn't understand that command. Try rephrasing."
-})
+                        return error_response(400, "Query parameter is required and cannot be empty.")
 
                     # --- Cache lookup ---
                     # Attempt to serve the response from cache. This skips
@@ -209,12 +204,7 @@ async def vapi_webhook(request: Request):
 
     except Exception as e:
         logger.error("SERVER ERROR", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-            "status": "error",
-            "message": "An unexpected error occurred."
-        })
+        return error_response(500, "An unexpected server error occurred. Please try again.")
 
 
 @app.get("/health")
@@ -237,10 +227,7 @@ async def stream_query(request: Request):
         session_id = body.get("sessionId", "default")
 
         if not query:
-            return JSONResponse(
-                status_code=400,
-                content={"status": "error", "message": "Query is required."}
-            )
+            return error_response(400, "Query parameter is required and cannot be empty.")
 
         # Cache lookup
         cached = cache_get(query)
@@ -280,13 +267,7 @@ async def stream_query(request: Request):
 
     except Exception as e:
         logger.error("SERVER STREAM ERROR", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": "An unexpected error occurred."
-            }
-        )
+        return error_response(500, "An unexpected server error occurred in the stream. Please try again.")
 
 
 # --- Admin endpoints ---------------------------------------------------
@@ -374,6 +355,28 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
         "generated_at": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
         "sessions": sessions,
     }
+
+@app.post("/index/start")
+def start_indexing():
+    """Trigger indexing in a background thread."""
+    if progress_state.get("running"):
+        return error_response(409, "Indexing is already in progress.")
+    threading.Thread(target=index_directory, args=(SAMPLE_CODEBASE_DIRECTORY,), daemon=True).start()
+    return {"status": "started", "message": "Indexing started. Poll /index/progress for updates."}
+
+
+@app.get("/index/progress")
+async def index_progress():
+    """SSE stream that emits progress_state updates until indexing completes."""
+    async def event_stream():
+        while True:
+            state = dict(progress_state)
+            yield f"data: {json.dumps(state)}\n\n"
+            if state["status"] in ("done", "error", "idle"):
+                break
+            await asyncio.sleep(0.5)
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 
 @app.get("/history")
 def get_history(session_id: str | None = None):
