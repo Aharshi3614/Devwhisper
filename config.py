@@ -107,6 +107,11 @@ SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
 )
 
+#Hybrid retrieval settings
+RRF_K: Final = 60
+HYBRID_TOP_K: Final = _env_int("HYBRID_TOP_K", 20)
+BM25_INDEX_PATH: Final = ".bm_index.pkl"
+
 # OpenAI-compatible LLM settings
 DEFAULT_LLM_BASE_URL: Final = "https://api.groq.com/openai/v1"
 DEFAULT_GROQ_MODEL: Final = "llama-3.3-70b-versatile"
