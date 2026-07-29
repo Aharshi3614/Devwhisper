@@ -1,53 +1,128 @@
 .mic-button {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 24px;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
   border: 1px solid var(--border);
-  border-radius: 9999px;
-  background: var(--bg);
+  background: var(--code-bg);
   color: var(--text-h);
-  font-size: 15px;
-  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  position: relative;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+  padding: 0;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
 }
 
-.mic-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+.mic-button:hover:not(:disabled) {
+  transform: scale(1.05);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 12px var(--accent-bg);
+  background: var(--bg);
 }
 
 .mic-button:focus-visible {
   outline: 3px solid var(--accent);
-  outline-offset: 3px;
+  outline-offset: 2px;
 }
 
-.mic-button.recording {
+.mic-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mic-button.listening {
   background: var(--accent);
-  color: white;
   border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 15px var(--accent-bg);
+  animation: mic-button-pulse 1.8s ease-in-out infinite alternate;
 }
 
 .mic-icon {
-  font-size: 18px;
+  font-size: 20px;
+  z-index: 2;
+  transition: transform 0.2s ease;
+}
+
+.mic-button.listening .mic-icon {
+  transform: scale(1.1);
+  animation: breathing 2s infinite ease-in-out;
+}
+
+/* Pulsing outer rings for active listening */
+.pulse-ring-glow {
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  z-index: 1;
+  pointer-events: none;
+  animation: pulse-ring 2.4s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+}
+
+.pulse-ring-glow.ring-1 {
+  animation-delay: 0s;
+}
+
+.pulse-ring-glow.ring-2 {
+  animation-delay: 0.8s;
+}
+
+.pulse-ring-glow.ring-3 {
+  animation-delay: 1.6s;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes breathing {
+  0%, 100% {
+    transform: scale(1.1);
+  }
+  50% {
+    transform: scale(0.95);
+  }
+}
+
+@keyframes mic-button-pulse {
+  from {
+    box-shadow: 0 0 12px var(--accent-border);
+  }
+  to {
+    box-shadow: 0 0 24px var(--accent);
+  }
 }
 
 @media (max-width: 480px) {
   .mic-button {
-    width: 100%;
-    justify-content: center;
-    padding: 14px 20px;
+    width: 40px;
+    height: 40px;
+  }
+  .mic-icon {
+    font-size: 18px;
   }
 }
 
 @media (prefers-color-scheme: dark) {
   .mic-button {
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  }
-
-  .mic-button:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
   }
 }

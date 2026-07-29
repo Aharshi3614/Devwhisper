@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
@@ -11,10 +11,16 @@ function Home() {
   const [response, setResponse] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [isVoiceActive, setIsVoiceActive] = useState(false)
+  const [isListening, setIsListening] = useState(false)
+  const [speechSupported, setSpeechSupported] = useState(false)
+  const recognitionRef = useRef(null)
+  const isMountedRef = useRef(false)
+  const abortControllerRef = useRef(null)
+  const mockTimerRef = useRef(null)
+
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
-  const [sessionId] = useState(() => {
+  const [sessionId, setSessionId] = useState(() => {
     const key = 'devwhisper_session_id'
     const existing = sessionStorage.getItem(key)
     if (existing) return existing
@@ -23,7 +29,132 @@ function Home() {
     return newId
   })
 
-  const handleWebhookFallback = async () => {
+  // Initialize Speech Recognition API
+  useEffect(() => {
+    isMountedRef.current = true
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (SpeechRecognition) {
+      setSpeechSupported(true)
+      const rec = new SpeechRecognition()
+      rec.continuous = true
+      rec.interimResults = true
+      rec.lang = 'en-US'
+
+      rec.onstart = () => {
+        if (isMountedRef.current) {
+          setIsListening(true)
+        }
+      }
+
+      rec.onresult = (event) => {
+        let transcript = ''
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript
+        }
+        if (isMountedRef.current) {
+          setQueryText(transcript)
+        }
+      }
+
+      rec.onerror = (err) => {
+        console.error('Speech Recognition Error:', err)
+        if (isMountedRef.current) {
+          setIsListening(false)
+        }
+      }
+
+      rec.onend = () => {
+        if (isMountedRef.current) {
+          setIsListening(false)
+        }
+      }
+
+      recognitionRef.current = rec
+    }
+
+        return () => {
+      isMountedRef.current = false
+
+      if (recognitionRef.current) {
+        recognitionRef.current.abort()
+      }
+
+      if (mockTimerRef.current) {
+        clearTimeout(mockTimerRef.current)
+        mockTimerRef.current = null
+      }
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
+  }, [])
+
+  const handleMicClick = () => {
+    if (speechSupported && recognitionRef.current) {
+      if (isListening) {
+        recognitionRef.current.stop()
+      } else {
+        setQueryText('')
+        try {
+          recognitionRef.current.start()
+        } catch (err) {
+          console.error('Failed to start speech recognition:', err)
+        }
+      }
+    } else {
+      // Mock Fallback for browsers/environments without SpeechRecognition
+      if (isListening) {
+        setIsListening(false)
+        if (mockTimerRef.current) {
+          clearTimeout(mockTimerRef.current)
+          mockTimerRef.current = null
+        }
+      } else {
+        setIsListening(true)
+        setQueryText('Listening...')
+        if (mockTimerRef.current) {
+          clearTimeout(mockTimerRef.current)
+        }
+        mockTimerRef.current = setTimeout(() => {
+          setIsListening(prev => {
+            if (prev) {
+              setQueryText('In main.py, what functions are found?')
+              return false
+            }
+            return prev
+          })
+          mockTimerRef.current = null
+        }, 3000)
+      }
+    }
+  }
+
+  const handleClearChat = async () => {
+    if (loading) return
+
+    setResponse('')
+    setQueryText('')
+    setError(null)
+
+    const newId = 'web-' + Math.random().toString(36).substring(2, 9)
+    sessionStorage.setItem('devwhisper_session_id', newId)
+    setSessionId(newId)
+
+    try {
+      const res = await fetch('/reset', {
+        method: 'POST'
+      })
+      if (!res.ok) {
+        console.error('Failed to reset conversation memory.')
+      }
+    } catch (err) {
+      console.error('Error resetting conversation memory:', err)
+    }
+  }
+
+  const handleWebhookFallback = async (fallbackQuery) => {
+    const q = fallbackQuery !== undefined ? fallbackQuery : queryText
     const payload = {
       message: {
         type: 'tool-calls',
@@ -34,7 +165,7 @@ function Home() {
             type: 'function',
             function: {
               name: 'query_codebase',
-              arguments: JSON.stringify({ query: queryText })
+              arguments: JSON.stringify({ query: q })
             }
           }
         ]
@@ -59,21 +190,30 @@ function Home() {
     }
 
     const resultText = data.results?.[0]?.result
-    if (resultText) {
-      setResponse(resultText)
-      setQueryText('')
-    } else {
-      setResponse('No response was generated by the codebase assistant.')
+    if (isMountedRef.current) {
+      if (resultText) {
+        setResponse(resultText)
+      } else {
+        setResponse('No response was generated by the codebase assistant.')
+      }
     }
   }
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
-    if (!queryText.trim() || loading) return
+    if (e) e.preventDefault()
+    if (!queryText.trim() || loading || isListening) return
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+    const signal = abortControllerRef.current.signal
+
+    const currentQuery = queryText
     setLoading(true)
     setError(null)
     setResponse('')
+    setQueryText('')
 
     try {
       const responseStream = await fetch('/stream', {
@@ -81,12 +221,13 @@ function Home() {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ query: queryText, sessionId: sessionId })
+        body: JSON.stringify({ query: currentQuery, sessionId: sessionId }),
+        signal
       })
 
       if (!responseStream.ok) {
         if (responseStream.status === 404) {
-          await handleWebhookFallback()
+          await handleWebhookFallback(currentQuery)
           return
         }
         throw new Error(`Streaming failed: HTTP ${responseStream.status}`)
@@ -107,25 +248,30 @@ function Home() {
         if (value) {
           const chunk = decoder.decode(value, { stream: !done })
           accumulated += chunk
-          setResponse(accumulated)
+          if (isMountedRef.current) {
+            setResponse(accumulated)
+          }
         }
       }
-
-      setQueryText('')
     } catch (err) {
+      if (err.name === 'AbortError') {
+        return
+      }
       console.warn('Streaming failed or not available, falling back to static webhook:', err)
-      try {
-        await handleWebhookFallback()
-      } catch (fallbackErr) {
-        setError(fallbackErr.message || 'Failed to reach the DevWhisper backend.')
+      if (isMountedRef.current) {
+        try {
+          await handleWebhookFallback(currentQuery)
+        } catch (fallbackErr) {
+          if (isMountedRef.current) {
+            setError(fallbackErr.message || 'Failed to reach the DevWhisper backend.')
+          }
+        }
       }
     } finally {
-      setLoading(false)
+      if (isMountedRef.current) {
+        setLoading(false)
+      }
     }
-  }
-
-  const toggleVoiceMode = () => {
-    setIsVoiceActive(prev => !prev)
   }
 
   return (
@@ -135,46 +281,62 @@ function Home() {
         <p className="subtitle-text">Voice-native developer experience agent</p>
       </header>
 
-      <main className="interactive-card">
-        {/* Voice Segment */}
-        <section className="voice-section">
-          <MicButton />
-          <div className="voice-status">
-            <p className="voice-status-title">Voice Assistant</p>
-            <p className="voice-status-desc">
-              Voice flow is ready. Click the mic button to start/stop recording.
-            </p>
-          </div>
-        </section>
-
-        <div className="or-divider">
-          <span className="line"></span>
-          <span className="divider-text">OR QUERY VIA TEXT</span>
-          <span className="line"></span>
-        </div>
-
-        {/* Text Input Segment */}
-        <section className="text-query-section">
-          <form onSubmit={handleSubmit} className="query-form">
-            <div className="textarea-wrapper">
-              <textarea
-                value={queryText}
-                onChange={e => setQueryText(e.target.value)}
-                placeholder="Ask about your codebase... (e.g. In main.py, what functions are found?)"
-                disabled={loading}
-                rows={3}
-                className="query-input"
-              />
+      <main className="query-card">
+        <form onSubmit={handleSubmit} className="query-form">
+          <div className="textarea-wrapper">
+            <textarea
+              value={queryText}
+              onChange={e => setQueryText(e.target.value)}
+              placeholder={isListening ? "Listening... Speak now." : "Ask about your codebase... (e.g., In main.py, what functions are found?)"}
+              disabled={loading}
+              rows={3}
+              className="query-input"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
+            />
+            
+            <div className="query-toolbar">
+              <div className="toolbar-left">
+                <MicButton 
+                  isListening={isListening} 
+                  onClick={handleMicClick}
+                  disabled={loading}
+                />
+                <div className="voice-status-info">
+                  <span className={`status-dot ${isListening ? 'listening' : 'ready'}`}></span>
+                  <span className="status-message">
+                    {isListening 
+                      ? (speechSupported ? "Listening..." : "Listening (Mock)...") 
+                      : "Voice assistant ready"}
+                  </span>
+                </div>
+              </div>
+              
+              <div className="toolbar-right">
+                <button
+                  type="button"
+                  onClick={handleClearChat}
+                  disabled={loading || (!queryText.trim() && !response && !error)}
+                  className="clear-button"
+                  title="Clear conversation"
+                >
+                  Clear Chat
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={loading || !queryText.trim() || isListening} 
+                  className="submit-button"
+                >
+                  {loading ? 'Analyzing...' : 'Send Query'}
+                </button>
+              </div>
             </div>
-            <button 
-              type="submit" 
-              disabled={loading || !queryText.trim()} 
-              className="submit-button"
-            >
-              {loading ? 'Analyzing...' : 'Send Query'}
-            </button>
-          </form>
-        </section>
+          </div>
+        </form>
 
         {/* Response Rendering */}
         <ResponseOutput response={response} loading={loading} error={error} />

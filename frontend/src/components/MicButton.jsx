@@ -1,23 +1,23 @@
-import { useState } from 'react'
 import './MicButton.css'
 
-export default function MicButton() {
-  const [isRecording, setIsRecording] = useState(false)
-
-  const handleClick = () => {
-    setIsRecording(!isRecording)
-  }
-
+export default function MicButton({ isListening, onClick, disabled }) {
   return (
     <button
-      className={`mic-button ${isRecording ? 'recording' : ''}`}
-      onClick={handleClick}
-      aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+      type="button"
+      className={`mic-button ${isListening ? 'listening' : ''}`}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={isListening ? 'Stop voice recording' : 'Start voice recording'}
+      title={isListening ? 'Stop voice recording' : 'Start voice recording'}
     >
       <span className="mic-icon">🎙️</span>
-      <span className="mic-text">
-        {isRecording ? 'Stop Recording' : 'Start Recording'}
-      </span>
+      {isListening && (
+        <>
+          <span className="pulse-ring-glow ring-1"></span>
+          <span className="pulse-ring-glow ring-2"></span>
+          <span className="pulse-ring-glow ring-3"></span>
+        </>
+      )}
     </button>
   )
 }

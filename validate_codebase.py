@@ -6,9 +6,7 @@ Performs pre-flight checks to detect common issues early.
 
 import os
 import sys
-
-# NOTE: Keep this in sync with indexer.py SUPPORTED_EXTENSIONS
-SUPPORTED_EXTENSIONS = {".py"}
+from config import SUPPORTED_EXTENSIONS
 
 IGNORED_DIRS = {"__pycache__", ".git", ".mypy_cache", ".pytest_cache", ".venv", "venv", "node_modules"}
 

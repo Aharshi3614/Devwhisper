@@ -13,8 +13,10 @@ def _point(payload):
 
 def test_retrieve_formats_ranked_results(monkeypatch):
     """Relevant Qdrant points are returned as readable, ranked context."""
+    vector = [0.1, 0.2, 0.3]
+
     mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.1, 0.2, 0.3]
+    mock_embedder.encode.return_value.tolist.return_value = vector
 
     mock_client = MagicMock()
     mock_client.query_points.return_value.points = [
@@ -42,10 +44,11 @@ def test_retrieve_formats_ranked_results(monkeypatch):
     mock_embedder.encode.assert_called_once_with("How is the data prepared?")
     mock_client.query_points.assert_called_once_with(
         collection_name="devwhisper",
-        query=[0.1, 0.2, 0.3],
+        query=vector,
         limit=2,
-        score_threshold=0.0
+        score_threshold=0.0,
     )
+
     assert "Result 1:" in context
     assert "File: pipeline.py" in context
     assert "Function: preprocess" in context
@@ -129,3 +132,66 @@ def test_retrieve_marks_non_function_snippet_as_unknown(monkeypatch):
     assert "File: settings.py" in context
     assert "Function: unknown" in context
     assert "DEBUG = False" in context
+
+
+def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
+    """Return unique source files in order when sources are requested."""
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = [0.7]
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point({"file": "a.py", "text": "def a(): pass"}),
+        _point({"file": "b.py", "text": "def b(): pass"}),
+        _point({"file": "a.py", "text": "def a2(): pass"}),
+        _point({"file": "unknown", "text": "def unknown(): pass"}),
+        _point({"file": None, "text": "def empty(): pass"}),
+    ]
+
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    context, sources = retriever.retrieve("test query", include_sources=True)
+
+    assert isinstance(context, str)
+    assert "File: a.py" in context
+    assert "File: b.py" in context
+    assert sources == ["a.py", "b.py"]
+
+
+def test_rrf_fusion_ranks_shared_docs_higher():
+    """Document appearing in multiple lists gets a higher RRF rank."""
+    list_a = [{"_idx": 1}, {"_idx": 2}, {"_idx": 3}]
+    list_b = [{"_idx": 2}, {"_idx": 4}, {"_idx": 5}]
+    fused = retriever._rrf_fusion([list_a, list_b], k=60, final_top_k=5)
+    indices = [d["_idx"] for d in fused]
+    assert indices[0] == 2, f"Expected shared doc (idx=2) first, got {indices}"
+
+
+def test_extract_symbols_finds_function_names():
+    symbols = retriever._extract_symbols("What does the retrieve() function do?")
+    assert "retrieve" in symbols
+
+
+def test_extract_symbols_finds_camel_case():
+    symbols = retriever._extract_symbols("Where is the DataProcessor class?")
+    assert "DataProcessor" in symbols
+
+
+def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
+    """When BM25 index is absent, degrade to pure vector search."""
+    monkeypatch.setattr(retriever, "_bm25_data", None)
+
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = [0.0]
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point({"file": "test.py", "start_line": 1, "text": "def foo(): pass"})
+    ]
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    context = retriever.retrieve("test query", top_k=2)
+    assert "Result 1:" in context
+    assert "File: test.py" in context
