@@ -5,6 +5,7 @@ import ResponseOutput from './components/ResponseOutput.jsx'
 import ThemeToggle from './components/ThemeToggle.jsx'
 import MicButton from './components/MicButton.jsx'
 import './App.css'
+import SettingsPanel from './components/SettingsPanel.jsx'
 
 function Home() {
   const [queryText, setQueryText] = useState('')
@@ -385,7 +386,7 @@ function App() {
   return (
     <BrowserRouter>
       <div className="app">
-        <ThemeToggle />
+        <SettingsPanel />
 
         <Routes>
           <Route path="/" element={<Home />} />
