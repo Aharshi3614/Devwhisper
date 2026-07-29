@@ -15,3 +15,14 @@ class MockSentenceTransformer:
 
 mock_sentence_transformers.SentenceTransformer = MockSentenceTransformer
 sys.modules['sentence_transformers'] = mock_sentence_transformers
+
+mock_rank_bm25_module = MagicMock()
+
+class MockBM250kapi:
+    def __init__(self, corpus):
+        self.corpus = corpus
+    def get_scores(self, query):
+        return [0.0] * len(self.corpus)
+
+mock_rank_bm25_module.BM250kapi = MockBM250kapi
+sys.modules['rank_bm25'] = mock_rank_bm25_module

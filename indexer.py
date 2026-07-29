@@ -20,7 +20,11 @@ from config import (
     QDRANT_URL_ENV,
     SAMPLE_CODEBASE_DIRECTORY,
     SUPPORTED_EXTENSIONS,
+    BM25_INDEX_PATH
 )
+
+import pickle
+from rank_bm25 import BM25Okapi
 
 client = QdrantClient(
     url=os.getenv(QDRANT_URL_ENV),
@@ -160,6 +164,25 @@ def index_directory(directory):
         else:
             print("\nNo changes detected. Nothing to upsert.")
 
+        all_chunks = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
+                    path = os.path.join(root, file)
+                    chunks = chunk_file(path)
+                    all_chunks.extend(chunks)
+
+        if all_chunks:
+            tokenize_corpus = [tokenize(c["text"]) for c in all_chunks]
+            bm25 = BM25Okapi(tokenize_corpus)
+            with open(BM25_INDEX_PATH,"wb") as f:
+                pickle.dump({
+                    "bm25": bm25,
+                    "corpus": [c["text"] for c in all_chunks],
+                    "chunks": all_chunks
+                }, f)
+            print(f"BM25 index saved ({len(all_chunks)} chunks) to {BM25_INDEX_PATH}")
+
         cache_data["_metadata"] = {
             "repository_name": os.path.basename(os.path.abspath(directory)),
             "indexing_timestamp": datetime.now(timezone.utc).isoformat(),
@@ -193,6 +216,10 @@ def get_file_hash(filepath):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
+def tokenize(text:str) -> list[str]:
+    """Split code text into lowercased word tokens for BM25."""
+    import re
+    return [t.lower() for t in re.findall(r"\b\w+\b", text)]
 
 if __name__ == "__main__":
     index_directory(SAMPLE_CODEBASE_DIRECTORY)

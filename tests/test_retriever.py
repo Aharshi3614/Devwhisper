@@ -157,3 +157,41 @@ def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
     assert "File: a.py" in context
     assert "File: b.py" in context
     assert sources == ["a.py", "b.py"]
+
+
+def test_rrf_fusion_ranks_shared_docs_higher():
+    """Document appearing in multiple lists gets a higher RRF rank."""
+    list_a = [{"_idx": 1}, {"_idx": 2}, {"_idx": 3}]
+    list_b = [{"_idx": 2}, {"_idx": 4}, {"_idx": 5}]
+    fused = retriever._rrf_fusion([list_a, list_b], k=60, final_top_k=5)
+    indices = [d["_idx"] for d in fused]
+    assert indices[0] == 2, f"Expected shared doc (idx=2) first, got {indices}"
+
+
+def test_extract_symbols_finds_function_names():
+    symbols = retriever._extract_symbols("What does the retrieve() function do?")
+    assert "retrieve" in symbols
+
+
+def test_extract_symbols_finds_camel_case():
+    symbols = retriever._extract_symbols("Where is the DataProcessor class?")
+    assert "DataProcessor" in symbols
+
+
+def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
+    """When BM25 index is absent, degrade to pure vector search."""
+    monkeypatch.setattr(retriever, "_bm25_data", None)
+
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = [0.0]
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point({"file": "test.py", "start_line": 1, "text": "def foo(): pass"})
+    ]
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    context = retriever.retrieve("test query", top_k=2)
+    assert "Result 1:" in context
+    assert "File: test.py" in context
