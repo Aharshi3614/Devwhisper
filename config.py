@@ -75,6 +75,7 @@ EMBEDDING_MODEL_NAME: Final = os.getenv(
     "EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2"
 )
 EMBEDDING_DIMENSIONS: Final = _env_int("EMBEDDING_DIMENSIONS", 384)
+EMBEDDING_VERSION: Final = os.getenv("EMBEDDING_VERSION", "v1")
 QDRANT_COLLECTION_NAME: Final = os.getenv(
     "QDRANT_COLLECTION_NAME", "devwhisper"
 )
@@ -105,6 +106,11 @@ SUPPORTED_EXTENSIONS: Final = frozenset({".py" ,".md"})
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
 )
+
+#Hybrid retrieval settings
+RRF_K: Final = 60
+HYBRID_TOP_K: Final = _env_int("HYBRID_TOP_K", 20)
+BM25_INDEX_PATH: Final = ".bm_index.pkl"
 
 # OpenAI-compatible LLM settings
 DEFAULT_LLM_BASE_URL: Final = "https://api.groq.com/openai/v1"

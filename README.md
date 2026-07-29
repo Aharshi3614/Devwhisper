@@ -22,7 +22,7 @@ DevWhisper lets you stay in flow. Ask a question with your voice, get an answer 
 ## ✨ What It Does
 
 🎤 You ask a question about your code
-🔍 It searches your actual codebase semantically
+🔍 It searches your actual codebase with hybrid vector + keyword search
 🔊 It responds in plain spoken English, like a senior dev sitting next to you
 
 Example questions that work:
@@ -41,7 +41,7 @@ Vapi — Speech to Text
       ↓
 FastAPI Webhook Server
       ↓
-Qdrant Vector Search
+Qdrant + BM25 Hybrid Search
       ↓
 Groq LLaMA 3.3 70B
       ↓
@@ -59,7 +59,7 @@ Developer hears the response
 | Component | Role |
 |---|---|
 | 🎙️ [Vapi](https://vapi.ai/) | Handles voice input and output |
-| 🗄️ [Qdrant](https://qdrant.tech/) | Stores and searches code as vectors |
+| 🗄️ [Qdrant](https://qdrant.tech/) + BM25 | Hybrid vector + keyword search |
 | 🤖 [Groq](https://groq.com/) (LLaMA 3.3 70B) | Generates the response |
 | ⚡ [FastAPI](https://fastapi.tiangolo.com/) | Receives webhooks from Vapi and orchestrates everything |
 
@@ -186,6 +186,8 @@ You can test DevWhisper's conversation flow directly from your terminal — with
 | `main.py` | FastAPI webhook server, handles all Vapi events |
 | `indexer.py` | Chunks your code files, uploads them to Qdrant, and validates the index |
 | `retriever.py` | Takes a query and finds the most relevant code chunks |
+| `indexer.py` | Chunks, embeds, and uploads to Qdrant plus builds BM25 keyword index |
+| `retriever.py` | Hybrid search: vector + BM25 + symbol matching fused via RRF |
 | `llm.py` | Sends the query and context to Groq and returns the answer |
 | `test_client.py` | Standalone CLI client for testing without Vapi |
 | `sample_codebase/` | Put your own Python project files here |
