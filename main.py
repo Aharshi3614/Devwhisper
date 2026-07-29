@@ -1,14 +1,14 @@
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from retriever import retrieve, embedder, client as qdrant_client
+from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata
 from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
 from logger import logger
 from errors import error_response
 from indexer import index_directory, progress_state
-from config import SAMPLE_CODEBASE_DIRECTORY
+from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
 import json
 import os
 import time
@@ -211,6 +211,38 @@ async def vapi_webhook(request: Request):
 @app.get("/health")
 def health():
     return {"status": "ok", "message": "DevWhisper is running"}
+
+
+@app.get("/statistics")
+def get_statistics():
+    """Return repository and indexing statistics."""
+    try:
+        try:
+            collection_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+            collection_dict = (
+                collection_info.model_dump() if hasattr(collection_info, "model_dump")
+                else collection_info.dict() if hasattr(collection_info, "dict")
+                else vars(collection_info)
+            )
+            chunk_count = getattr(collection_info, "points_count", None)
+            if chunk_count is None:
+                chunk_count = collection_dict.get("points_count", 0)
+        except Exception as e:
+            logger.warning("Failed to get collection info from Qdrant: %s", e)
+            collection_dict = {}
+            chunk_count = 0
+
+        metadata = get_repository_metadata()
+        indexed_file_count = metadata.get("indexed_file_count", 0)
+
+        return {
+            "indexed_file_count": indexed_file_count,
+            "chunk_count": chunk_count,
+            "collection_info": collection_dict,
+        }
+    except Exception as e:
+        logger.error("Failed to retrieve statistics", exc_info=True)
+        return error_response(500, f"Failed to retrieve statistics: {str(e)}")
 
 
 @app.post("/reset")
