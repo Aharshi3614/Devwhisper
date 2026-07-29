@@ -13,11 +13,11 @@ function Home() {
   const [error, setError] = useState(null)
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
+  
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
   const abortControllerRef = useRef(null)
   const mockTimerRef = useRef(null)
-
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
   const [sessionId, setSessionId] = useState(() => {
@@ -72,7 +72,7 @@ function Home() {
       recognitionRef.current = rec
     }
 
-        return () => {
+    return () => {
       isMountedRef.current = false
 
       if (recognitionRef.current) {
@@ -340,6 +340,8 @@ function Home() {
 
         {/* Response Rendering */}
         <ResponseOutput response={response} loading={loading} error={error} />
+
+      
       </main>
 
       <footer className="landing-footer">
