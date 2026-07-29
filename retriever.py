@@ -1,36 +1,30 @@
-import os
+"""Qdrant-backed code retrieval helpers."""
 
-from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
-
+from dependencies import RetrievalDependencies, get_retrieval_dependencies
 from config import (
-    EMBEDDING_MODEL_NAME,
-    QDRANT_API_KEY_ENV,
     QDRANT_COLLECTION_NAME,
     QDRANT_SIMILARITY_THRESHOLD,
-    QDRANT_URL_ENV,
     RETRIEVAL_TOP_K,
 )
 
-client = QdrantClient(
-    url=os.getenv(QDRANT_URL_ENV),
-    api_key=os.getenv(QDRANT_API_KEY_ENV),
-)
-embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
+
+def _resolve_dependencies(
+    dependencies: RetrievalDependencies | None,
+) -> RetrievalDependencies:
+    """Use injected dependencies when provided, otherwise resolve defaults."""
+    return dependencies or get_retrieval_dependencies()
 
 
 def retrieve(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
+    dependencies: RetrievalDependencies | None = None,
 ):
-    """Retrieve the most relevant code snippets for a natural-language query.
-
-    Encodes ``query`` into an embedding, performs a Qdrant vector search, and
-    formats the top matches into a human-readable context string.
-    """
-    vector = embedder.encode(query).tolist()
-    results = client.query_points(
+    """Retrieve the most relevant code snippets for a natural-language query."""
+    resolved = _resolve_dependencies(dependencies)
+    vector = resolved.embedder.encode(query).tolist()
+    results = resolved.client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
         query=vector,
         limit=top_k,

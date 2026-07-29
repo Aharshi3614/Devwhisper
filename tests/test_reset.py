@@ -11,8 +11,37 @@ These tests verify that:
 
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import MagicMock, patch
 
+from dependencies import BackendDependencies, IndexingDependencies, LLMDependencies, RetrievalDependencies
 from main import app, conversation_sessions
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _mock_backend_dependencies():
+    """Provide fake backend dependencies during FastAPI startup/shutdown."""
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value = MagicMock()
+
+    mock_qdrant = MagicMock()
+
+    fake_backend = BackendDependencies(
+        retrieval=RetrievalDependencies(
+            client=mock_qdrant,
+            embedder=mock_embedder,
+        ),
+        llm=LLMDependencies(
+            client=MagicMock(),
+            model="test-model",
+        ),
+        indexing=IndexingDependencies(
+            client=mock_qdrant,
+            embedder=mock_embedder,
+        ),
+    )
+
+    with patch("dependencies.get_backend_dependencies", return_value=fake_backend):
+        yield
 
 
 @pytest.fixture(scope="module")

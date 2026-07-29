@@ -4,6 +4,7 @@ import os
 import tempfile
 from types import SimpleNamespace
 
+from dependencies import IndexingDependencies
 from config import SUPPORTED_EXTENSIONS
 import indexer
 from indexer import chunk_file, validate_index
@@ -94,9 +95,9 @@ def test_validate_index_passes_for_complete_index(monkeypatch, tmp_path):
         def scroll(self, **kwargs):
             return points, None
 
-    monkeypatch.setattr(indexer, "client", FakeClient())
+    dependencies = IndexingDependencies(client=FakeClient(), embedder=SimpleNamespace())
 
-    report = validate_index(str(tmp_path))
+    report = validate_index(str(tmp_path), dependencies=dependencies)
 
     assert report.is_valid is True
     assert report.expected_chunk_count == len(points)
@@ -146,9 +147,9 @@ def test_validate_index_reports_missing_points_and_bad_metadata(monkeypatch, tmp
         def scroll(self, **kwargs):
             return points, None
 
-    monkeypatch.setattr(indexer, "client", FakeClient())
+    dependencies = IndexingDependencies(client=FakeClient(), embedder=SimpleNamespace())
 
-    report = validate_index(str(tmp_path))
+    report = validate_index(str(tmp_path), dependencies=dependencies)
 
     assert report.is_valid is False
     assert report.expected_chunk_count == len(chunks)

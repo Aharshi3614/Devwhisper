@@ -6,27 +6,17 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
-from sentence_transformers import SentenceTransformer
 
 from config import (
     EMBEDDING_DIMENSIONS,
-    EMBEDDING_MODEL_NAME,
     INDEX_CHUNK_OVERLAP,
     INDEX_CHUNK_SIZE,
-    QDRANT_API_KEY_ENV,
     QDRANT_COLLECTION_NAME,
-    QDRANT_URL_ENV,
     SAMPLE_CODEBASE_DIRECTORY,
     SUPPORTED_EXTENSIONS,
 )
-
-client = QdrantClient(
-    url=os.getenv(QDRANT_URL_ENV),
-    api_key=os.getenv(QDRANT_API_KEY_ENV),
-)
-embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+from dependencies import IndexingDependencies, get_indexing_dependencies
 
 
 @dataclass
@@ -50,6 +40,15 @@ class IndexValidationReport:
             or self.file_issues
             or self.collection_issues
         )
+
+
+progress_state = {
+    "status": "idle",
+    "current_file": None,
+    "files_processed": 0,
+    "chunks_indexed": 0,
+    "last_validation": None,
+}
 
 
 def _safe_load_json(path: str) -> dict[str, Any]:
@@ -161,7 +160,7 @@ def _collect_expected_index_state(
     return expected_points, per_file_counts
 
 
-def _scroll_collection_points(collection_name: str) -> list[Any]:
+def _scroll_collection_points(client, collection_name: str) -> list[Any]:
     """Fetch all points from a Qdrant collection using pagination."""
     points: list[Any] = []
     offset = None
@@ -183,12 +182,14 @@ def _scroll_collection_points(collection_name: str) -> list[Any]:
 
 def validate_index(
     directory: str,
+    dependencies: IndexingDependencies | None = None,
     collection_name: str = QDRANT_COLLECTION_NAME,
 ) -> IndexValidationReport:
     """Validate that the vector index matches the current codebase state."""
     report = IndexValidationReport()
+    resolved = dependencies or get_indexing_dependencies()
 
-    if not client.collection_exists(collection_name):
+    if not resolved.client.collection_exists(collection_name):
         report.collection_issues.append(f"Collection does not exist: {collection_name}")
         return report
 
@@ -196,7 +197,7 @@ def validate_index(
     report.expected_chunk_count = len(expected_points)
 
     try:
-        actual_points = _scroll_collection_points(collection_name)
+        actual_points = _scroll_collection_points(resolved.client, collection_name)
     except Exception as exc:
         report.collection_issues.append(f"Could not read collection '{collection_name}': {exc}")
         return report
@@ -324,7 +325,7 @@ def print_validation_report(report: IndexValidationReport) -> None:
         print("\nIndex validation found inconsistencies.")
 
 
-def create_collection():
+def create_collection(client):
     try:
         client.delete_collection(QDRANT_COLLECTION_NAME)
     except Exception:
@@ -339,10 +340,23 @@ def create_collection():
     )
 
 
-def index_directory(directory):
+def index_directory(
+    directory,
+    dependencies: IndexingDependencies | None = None,
+):
+    resolved = dependencies or get_indexing_dependencies()
+    progress_state.update(
+        {
+            "status": "indexing",
+            "current_file": None,
+            "files_processed": 0,
+            "chunks_indexed": 0,
+            "last_validation": None,
+        }
+    )
     before_cache_data = _safe_load_json(".index_cache.json")
-    if "--incremental" not in sys.argv or not client.collection_exists(QDRANT_COLLECTION_NAME):
-        create_collection()
+    if "--incremental" not in sys.argv or not resolved.client.collection_exists(QDRANT_COLLECTION_NAME):
+        create_collection(resolved.client)
 
     points = []
     cache_data = {}
@@ -351,6 +365,7 @@ def index_directory(directory):
         for file in files:
             if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
                 path = os.path.join(root, file)
+                progress_state["current_file"] = path
                 file_hash = get_file_hash(path)
                 cache_data[path] = {
                     "mtime": os.path.getmtime(path),
@@ -367,7 +382,7 @@ def index_directory(directory):
                 print(f" {file} -> {len(chunks)} chunks")
 
                 for chunk_index, chunk in enumerate(chunks):
-                    vector = embedder.encode(chunk["text"]).tolist()
+                    vector = resolved.embedder.encode(chunk["text"]).tolist()
                     stable_id = _stable_point_id(path, chunk["start_line"])
                     payload = _build_chunk_payload(
                         path,
@@ -383,9 +398,11 @@ def index_directory(directory):
                             payload=payload,
                         )
                     )
+                progress_state["files_processed"] += 1
+                progress_state["chunks_indexed"] += len(chunks)
 
     if points:
-        client.upsert(
+        resolved.client.upsert(
             collection_name=QDRANT_COLLECTION_NAME,
             points=points,
         )
@@ -396,7 +413,9 @@ def index_directory(directory):
     with open(".index_cache.json", "w", encoding="utf-8") as handle:
         json.dump(cache_data, handle, indent=2, ensure_ascii=False)
 
-    validation_report = validate_index(directory)
+    validation_report = validate_index(directory, dependencies=resolved)
+    progress_state["status"] = "validated" if validation_report.is_valid else "validation_failed"
+    progress_state["last_validation"] = validation_report
     print_validation_report(validation_report)
     return validation_report
 

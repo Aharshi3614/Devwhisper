@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from retriever import retrieve, embedder, client as qdrant_client
+import dependencies
+from retriever import retrieve
 from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
@@ -29,8 +30,9 @@ MAX_HISTORY_PER_SESSION = 5
 
 @app.on_event("startup")
 async def startup_event():
+    backend_dependencies = dependencies.get_backend_dependencies()
     try:
-        embedder.encode("warmup query")
+        backend_dependencies.retrieval.embedder.encode("warmup query")
         logger.info("Embedder warmed up and ready!")
     except Exception:
         logger.warning(
@@ -43,9 +45,10 @@ async def startup_event():
 async def shutdown_event():
     logger.info("Shutting down DevWhisper server...")
     try:
-        qdrant_client.close()
+        backend_dependencies = dependencies.get_backend_dependencies()
+        backend_dependencies.retrieval.client.close()
         logger.info("Qdrant client connection closed successfully.")
-    except Exception as e:
+    except Exception:
         logger.error("Error during Qdrant client connection cleanup", exc_info=True)
 
 
@@ -106,6 +109,7 @@ async def vapi_webhook(request: Request):
         message = body.get("message", {})
         msg_type = message.get("type", "")
         session_id = _get_session_id(message)
+        backend_dependencies = dependencies.get_backend_dependencies()
 
         # 🔹 Assistant init
         if msg_type == "assistant-request":
@@ -190,9 +194,18 @@ async def vapi_webhook(request: Request):
                         continue
 
                     # --- Cache miss: run full pipeline ---
-                    context, sources = retrieve(query, include_sources=True)
+                    context, sources = retrieve(
+                        query,
+                        include_sources=True,
+                        dependencies=backend_dependencies.retrieval,
+                    )
                     history = get_memory(session_id)
-                    answer = route_command(query, session_id) or generate_response(query, context, history)
+                    answer = route_command(query, session_id) or generate_response(
+                        query,
+                        context,
+                        history,
+                        dependencies=backend_dependencies.llm,
+                    )
 
                     if answer and answer.strip() and sources:
                         answer += "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
@@ -262,12 +275,22 @@ async def stream_query(request: Request):
             )
 
         # Cache miss: run retrieval
-        context, sources = retrieve(query, include_sources=True)
+        backend_dependencies = dependencies.get_backend_dependencies()
+        context, sources = retrieve(
+            query,
+            include_sources=True,
+            dependencies=backend_dependencies.retrieval,
+        )
         history = get_memory(session_id)
 
         def event_generator():
             full_response = []
-            for token in generate_response_stream(query, context, history):
+            for token in generate_response_stream(
+                query,
+                context,
+                history,
+                dependencies=backend_dependencies.llm,
+            ):
                 full_response.append(token)
                 yield token
 

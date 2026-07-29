@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from dependencies import RetrievalDependencies
 import retriever
 
 
@@ -11,15 +12,21 @@ def _point(payload):
     return SimpleNamespace(payload=payload)
 
 
-def test_retrieve_formats_ranked_results(monkeypatch):
-    """Relevant Qdrant points are returned as readable, ranked context."""
-    vector = [0.1, 0.2, 0.3]
-
+def _dependencies(vector, points):
+    """Create injected retrieval dependencies for a test case."""
     mock_embedder = MagicMock()
     mock_embedder.encode.return_value.tolist.return_value = vector
 
     mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
+    mock_client.query_points.return_value.points = points
+
+    return RetrievalDependencies(client=mock_client, embedder=mock_embedder)
+
+
+def test_retrieve_formats_ranked_results():
+    """Relevant Qdrant points are returned as readable, ranked context."""
+    vector = [0.1, 0.2, 0.3]
+    points = [
         _point(
             {
                 "file": "pipeline.py",
@@ -36,13 +43,16 @@ def test_retrieve_formats_ranked_results(monkeypatch):
         ),
     ]
 
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
+    dependencies = _dependencies(vector, points)
 
-    context = retriever.retrieve("How is the data prepared?", top_k=2)
+    context = retriever.retrieve(
+        "How is the data prepared?",
+        top_k=2,
+        dependencies=dependencies,
+    )
 
-    mock_embedder.encode.assert_called_once_with("How is the data prepared?")
-    mock_client.query_points.assert_called_once_with(
+    dependencies.embedder.encode.assert_called_once_with("How is the data prepared?")
+    dependencies.client.query_points.assert_called_once_with(
         collection_name="devwhisper",
         query=vector,
         limit=2,
@@ -57,32 +67,18 @@ def test_retrieve_formats_ranked_results(monkeypatch):
     assert "Function: train_model" in context
 
 
-def test_retrieve_returns_empty_string_when_no_matches(monkeypatch):
+def test_retrieve_returns_empty_string_when_no_matches():
     """An empty Qdrant response produces an empty context string."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.0]
+    dependencies = _dependencies([0.0], [])
 
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = []
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
-    assert retriever.retrieve("missing symbol") == ""
+    assert retriever.retrieve("missing symbol", dependencies=dependencies) == ""
 
 
-def test_retrieve_uses_safe_defaults_for_missing_payload_fields(monkeypatch):
+def test_retrieve_uses_safe_defaults_for_missing_payload_fields():
     """Incomplete point payloads are formatted without raising errors."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.4]
+    dependencies = _dependencies([0.4], [_point({})])
 
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [_point({})]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
-    context = retriever.retrieve("unknown code")
+    context = retriever.retrieve("unknown code", dependencies=dependencies)
 
     assert "File: unknown" in context
     assert "Function: unknown" in context
@@ -90,68 +86,60 @@ def test_retrieve_uses_safe_defaults_for_missing_payload_fields(monkeypatch):
     assert "Code:\n\n" in context
 
 
-def test_retrieve_handles_none_payload(monkeypatch):
+def test_retrieve_handles_none_payload():
     """A point whose payload is None is treated like an empty payload."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.5]
+    dependencies = _dependencies([0.5], [_point(None)])
 
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [_point(None)]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
-    context = retriever.retrieve("unstructured point")
+    context = retriever.retrieve("unstructured point", dependencies=dependencies)
 
     assert "Result 1:" in context
     assert "File: unknown" in context
     assert "Function: unknown" in context
 
 
-def test_retrieve_marks_non_function_snippet_as_unknown(monkeypatch):
+def test_retrieve_marks_non_function_snippet_as_unknown():
     """Snippets without a regular ``def`` line keep the fallback name."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.6]
+    dependencies = _dependencies(
+        [0.6],
+        [
+            _point(
+                {
+                    "file": "settings.py",
+                    "start_line": 1,
+                    "text": "DEBUG = False\nTIMEOUT = 30",
+                }
+            )
+        ],
+    )
 
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
-        _point(
-            {
-                "file": "settings.py",
-                "start_line": 1,
-                "text": "DEBUG = False\nTIMEOUT = 30",
-            }
-        )
-    ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
-    context = retriever.retrieve("Where is timeout configured?")
+    context = retriever.retrieve(
+        "Where is timeout configured?",
+        dependencies=dependencies,
+    )
 
     assert "File: settings.py" in context
     assert "Function: unknown" in context
     assert "DEBUG = False" in context
 
 
-def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
+def test_retrieve_with_sources_returns_tuple_and_deduplicates():
     """Return unique source files in order when sources are requested."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.7]
+    dependencies = _dependencies(
+        [0.7],
+        [
+            _point({"file": "a.py", "text": "def a(): pass"}),
+            _point({"file": "b.py", "text": "def b(): pass"}),
+            _point({"file": "a.py", "text": "def a2(): pass"}),
+            _point({"file": "unknown", "text": "def unknown(): pass"}),
+            _point({"file": None, "text": "def empty(): pass"}),
+        ],
+    )
 
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
-        _point({"file": "a.py", "text": "def a(): pass"}),
-        _point({"file": "b.py", "text": "def b(): pass"}),
-        _point({"file": "a.py", "text": "def a2(): pass"}),
-        _point({"file": "unknown", "text": "def unknown(): pass"}),
-        _point({"file": None, "text": "def empty(): pass"}),
-    ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
-    context, sources = retriever.retrieve("test query", include_sources=True)
+    context, sources = retriever.retrieve(
+        "test query",
+        include_sources=True,
+        dependencies=dependencies,
+    )
 
     assert isinstance(context, str)
     assert "File: a.py" in context
