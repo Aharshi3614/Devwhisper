@@ -112,6 +112,13 @@ SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
 )
 
+# Maximum file size for indexing
+MAX_FILE_SIZE_MB: Final = _env_or_json("MAX_FILE_SIZE_MB", 1)
+if MAX_FILE_SIZE_MB < 1:
+    raise ValueError(f"MAX_FILE_SIZE_MB must be >= 1, got {MAX_FILE_SIZE_MB}")
+MAX_FILE_SIZE_BYTES: Final = MAX_FILE_SIZE_MB * 1024 * 1024
+
+
 # Hybrid retrieval settings
 RRF_K: Final = 60
 HYBRID_TOP_K: Final = _env_int("HYBRID_TOP_K", 20)
