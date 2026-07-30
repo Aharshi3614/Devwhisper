@@ -1,5 +1,3 @@
-import os
-
 from openai import OpenAI
 from logger import logger
 
@@ -7,35 +5,33 @@ from config import (
     DEFAULT_GROQ_MODEL,
     DEFAULT_LLM_BASE_URL,
     DEFAULT_OPENAI_COMPATIBLE_MODEL,
-    GROQ_API_KEY_ENV,
-    LLM_API_KEY_ENV,
-    LLM_BASE_URL_ENV,
-    LLM_MODEL_ENV,
+    GROQ_API_KEY,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
 )
 
 
 def _get_client() -> OpenAI:
     """Create an OpenAI-compatible client based on the configured provider."""
-    provider_api_key = os.getenv(LLM_API_KEY_ENV)
-    if provider_api_key is None:
+    if LLM_API_KEY is None:
         return OpenAI(
-            api_key=os.getenv(GROQ_API_KEY_ENV),
+            api_key=GROQ_API_KEY,
             base_url=DEFAULT_LLM_BASE_URL,
         )
 
     return OpenAI(
-        api_key=provider_api_key or os.getenv(GROQ_API_KEY_ENV),
-        base_url=os.getenv(LLM_BASE_URL_ENV, DEFAULT_LLM_BASE_URL),
+        api_key=LLM_API_KEY or GROQ_API_KEY,
+        base_url=LLM_BASE_URL,
     )
 
 
 def _get_model() -> str:
     """Return the configured model name or the provider-specific default."""
-    explicit_model = os.getenv(LLM_MODEL_ENV)
-    if explicit_model:
-        return explicit_model
+    if LLM_MODEL:
+        return LLM_MODEL
 
-    if os.getenv(LLM_API_KEY_ENV) is None:
+    if LLM_API_KEY is None:
         return DEFAULT_GROQ_MODEL
     return DEFAULT_OPENAI_COMPATIBLE_MODEL
 
