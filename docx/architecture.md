@@ -66,7 +66,7 @@ Input         : Query encoded as a 384-dimension vector
 
 Output        : Top 3 most relevant code chunks
 
-How           : Code files are chunked and embedded using sentence-transformers (all-MiniLM-L6-v2) and stored in Qdrant. At query time, the question is embedded and cosine similarity is used to find the closest code                     chunks.
+How           : Code files are chunked, embedded using sentence-transformers (all-MiniLM-L6-v2) and indexed with BM25 for keyword search. At query time, vector cosine similarity, BM25 keyword matching, and exact symbol matching run in parallel. Results are fused via Reciprocal Rank Fusion (RRF) to produce a final ranked list.
 
 
 
@@ -140,7 +140,9 @@ Step 4  - Vectors + metadata uploaded to Qdrant cloud
 
 Step 5  - Codebase is now searchable by voice
 
+Step 6  - BM25 keyword index is built from chunks and saved locally
 
+Step 7  - Codebase is now searchable by voice
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

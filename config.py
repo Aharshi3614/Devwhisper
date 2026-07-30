@@ -84,6 +84,11 @@ QDRANT_SIMILARITY_THRESHOLD: Final = _env_float(
 )
 RETRIEVAL_TOP_K: Final = _env_int("RETRIEVAL_TOP_K", 6)
 
+# Cache settings
+CACHE_SIMILARITY_THRESHOLD: Final = _env_float(
+    "CACHE_SIMILARITY_THRESHOLD", 0.70
+)
+
 # Indexing settings
 INDEX_CHUNK_SIZE: Final = _env_or_json("INDEX_CHUNK_SIZE", 15)
 INDEX_CHUNK_OVERLAP: Final = _env_or_json("INDEX_CHUNK_OVERLAP", 3)
@@ -102,10 +107,15 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
         f"INDEX_CHUNK_SIZE ({INDEX_CHUNK_SIZE}) must be greater than "
         f"INDEX_CHUNK_OVERLAP ({INDEX_CHUNK_OVERLAP})"
     )
-SUPPORTED_EXTENSIONS: Final = frozenset({".py" ,".md"})
+SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md"})
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
 )
+
+# Hybrid retrieval settings
+RRF_K: Final = 60
+HYBRID_TOP_K: Final = _env_int("HYBRID_TOP_K", 20)
+BM25_INDEX_PATH: Final = ".bm_index.pkl"
 
 # OpenAI-compatible LLM settings
 DEFAULT_LLM_BASE_URL: Final = "https://api.groq.com/openai/v1"

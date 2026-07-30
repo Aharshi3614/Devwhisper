@@ -1,15 +1,20 @@
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from retriever import retrieve, embedder, client as qdrant_client
+from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata
 from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
 from logger import logger
 from errors import error_response
+from indexer import index_directory, progress_state
+from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
 import json
 import os
 import time
+import asyncio
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 app = FastAPI()
@@ -23,7 +28,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- Per-session memory store ---
 # { session_id: {"history": [...], "last_used": <timestamp>} }
-conversation_sessions = {}
+conversation_sessions = OrderedDict()
+session_lock = threading.Lock()
 MAX_SESSIONS = 100
 MAX_HISTORY_PER_SESSION = 5
 
@@ -58,32 +64,31 @@ def _get_session_id(message: dict) -> str:
 
 def _evict_if_needed():
     """Simple LRU eviction: drop the least-recently-used session if over cap."""
-    if len(conversation_sessions) <= MAX_SESSIONS:
-        return
-    oldest_id = min(
-        conversation_sessions,
-        key=lambda sid: conversation_sessions[sid]["last_used"]
-    )
-    del conversation_sessions[oldest_id]
+    while len(conversation_sessions) > MAX_SESSIONS:
+        conversation_sessions.popitem(last=False)
 
 
 def update_memory(session_id: str, user: str, assistant: str):
-    session = conversation_sessions.setdefault(
-        session_id, {"history": [], "last_used": time.time()}
-    )
-    session["history"].append(f"User: {user}\nAssistant: {assistant}")
-    if len(session["history"]) > MAX_HISTORY_PER_SESSION:
-        session["history"].pop(0)
-    session["last_used"] = time.time()
-    _evict_if_needed()
+    with session_lock:
+        session = conversation_sessions.setdefault(
+            session_id, {"history": [], "last_used": time.time()}
+        )
+        session["history"].append(f"User: {user}\nAssistant: {assistant}")
+        if len(session["history"]) > MAX_HISTORY_PER_SESSION:
+            session["history"].pop(0)
+        session["last_used"] = time.time()
+        conversation_sessions.move_to_end(session_id)
+        _evict_if_needed()
 
 
 def get_memory(session_id: str) -> str:
-    session = conversation_sessions.get(session_id)
-    if not session:
-        return ""
-    session["last_used"] = time.time()
-    return "\n\n".join(session["history"])
+    with session_lock:
+        session = conversation_sessions.get(session_id)
+        if not session:
+            return ""
+        session["last_used"] = time.time()
+        conversation_sessions.move_to_end(session_id)
+        return "\n\n".join(session["history"])
 
 
 # FIX: root route to prevent 502
@@ -208,10 +213,43 @@ def health():
     return {"status": "ok", "message": "DevWhisper is running"}
 
 
+@app.get("/statistics")
+def get_statistics():
+    """Return repository and indexing statistics."""
+    try:
+        try:
+            collection_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+            collection_dict = (
+                collection_info.model_dump() if hasattr(collection_info, "model_dump")
+                else collection_info.dict() if hasattr(collection_info, "dict")
+                else vars(collection_info)
+            )
+            chunk_count = getattr(collection_info, "points_count", None)
+            if chunk_count is None:
+                chunk_count = collection_dict.get("points_count", 0)
+        except Exception as e:
+            logger.warning("Failed to get collection info from Qdrant: %s", e)
+            collection_dict = {}
+            chunk_count = 0
+
+        metadata = get_repository_metadata()
+        indexed_file_count = metadata.get("indexed_file_count", 0)
+
+        return {
+            "indexed_file_count": indexed_file_count,
+            "chunk_count": chunk_count,
+            "collection_info": collection_dict,
+        }
+    except Exception as e:
+        logger.error("Failed to retrieve statistics", exc_info=True)
+        return error_response(500, f"Failed to retrieve statistics: {str(e)}")
+
+
 @app.post("/reset")
 def reset_memory():
     """Clear all conversation history and return confirmation."""
-    conversation_sessions.clear()
+    with session_lock:
+        conversation_sessions.clear()
     return {"status": "memory cleared"}
 
 
@@ -321,25 +359,26 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
 
     now = time.time()
     sessions = []
-    for session_id, data in conversation_sessions.items():
-        last_used_ts = data.get("last_used", 0)
-        try:
-            last_used_iso = (
-                datetime.fromtimestamp(last_used_ts, tz=timezone.utc).isoformat()
-                .replace("+00:00", "Z")
-            )
-        except (ValueError, OSError):
-            # Defensive: skip malformed timestamps rather than fail the request.
-            last_used_iso = None
+    with session_lock:
+        for session_id, data in conversation_sessions.items():
+            last_used_ts = data.get("last_used", 0)
+            try:
+                last_used_iso = (
+                    datetime.fromtimestamp(last_used_ts, tz=timezone.utc).isoformat()
+                    .replace("+00:00", "Z")
+                )
+            except (ValueError, OSError):
+                # Defensive: skip malformed timestamps rather than fail the request.
+                last_used_iso = None
 
-        sessions.append(
-            {
-                "session_id": session_id,
-                "last_used": last_used_iso,
-                "last_used_ago_seconds": int(now - last_used_ts) if last_used_ts else None,
-                "message_count": len(data.get("history", [])),
-            }
-        )
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "last_used": last_used_iso,
+                    "last_used_ago_seconds": int(now - last_used_ts) if last_used_ts else None,
+                    "message_count": len(data.get("history", [])),
+                }
+            )
 
     # Sort by most-recently-used first — most useful for monitoring.
     sessions.sort(key=lambda s: s["last_used_ago_seconds"] or float("inf"))
@@ -352,6 +391,28 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
         "sessions": sessions,
     }
 
+@app.post("/index/start")
+def start_indexing():
+    """Trigger indexing in a background thread."""
+    if progress_state.get("running"):
+        return error_response(409, "Indexing is already in progress.")
+    threading.Thread(target=index_directory, args=(SAMPLE_CODEBASE_DIRECTORY,), daemon=True).start()
+    return {"status": "started", "message": "Indexing started. Poll /index/progress for updates."}
+
+
+@app.get("/index/progress")
+async def index_progress():
+    """SSE stream that emits progress_state updates until indexing completes."""
+    async def event_stream():
+        while True:
+            state = dict(progress_state)
+            yield f"data: {json.dumps(state)}\n\n"
+            if state["status"] in ("done", "error", "idle"):
+                break
+            await asyncio.sleep(0.5)
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @app.get("/history")
 def get_history(session_id: str | None = None):
     """
@@ -360,9 +421,10 @@ def get_history(session_id: str | None = None):
     - GET /history          → returns all session IDs
     - GET /history?session_id=xxx → returns history for that session
     """
-    if session_id:
-        session = conversation_sessions.get(session_id)
-        history = session["history"] if session else []
-        return {"session_id": session_id, "history": history}
-    all_session_ids = list(conversation_sessions.keys())
+    with session_lock:
+        if session_id:
+            session = conversation_sessions.get(session_id)
+            history = list(session["history"]) if session else []
+            return {"session_id": session_id, "history": history}
+        all_session_ids = list(conversation_sessions.keys())
     return {"session_ids": all_session_ids}
