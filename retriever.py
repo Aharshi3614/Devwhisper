@@ -9,10 +9,10 @@ from sentence_transformers import SentenceTransformer
 from config import (
     EMBEDDING_MODEL_NAME,
     EMBEDDING_VERSION,
-    QDRANT_API_KEY_ENV,
+    QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
     QDRANT_SIMILARITY_THRESHOLD,
-    QDRANT_URL_ENV,
+    QDRANT_URL,
     RETRIEVAL_TOP_K,
     BM25_INDEX_PATH,
     HYBRID_TOP_K,
@@ -21,8 +21,8 @@ from config import (
 from logger import logger
 
 client = QdrantClient(
-    url=os.getenv(QDRANT_URL_ENV),
-    api_key=os.getenv(QDRANT_API_KEY_ENV),
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY,
 )
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 

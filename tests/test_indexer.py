@@ -79,8 +79,8 @@ def test_collect_keeps_file_at_exact_limit():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "exact.py")
         content = "x\n" * 50
-        with open(path, "w") as f:
-            f.write(content)
+        with open(path, "wb") as f:
+            f.write(content.encode())
 
         files, skipped = collect_indexable_files(tmpdir, max_bytes=len(content))
 

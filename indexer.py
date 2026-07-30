@@ -17,9 +17,9 @@ from config import (
     INDEX_CHUNK_SIZE,
     MAX_FILE_SIZE_BYTES,
     MAX_FILE_SIZE_MB,
-    QDRANT_API_KEY_ENV,
+    QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
-    QDRANT_URL_ENV,
+    QDRANT_URL,
     SAMPLE_CODEBASE_DIRECTORY,
     SUPPORTED_EXTENSIONS,
     BM25_INDEX_PATH
@@ -30,8 +30,8 @@ import pickle
 from rank_bm25 import BM25Okapi
 
 client = QdrantClient(
-    url=os.getenv(QDRANT_URL_ENV),
-    api_key=os.getenv(QDRANT_API_KEY_ENV),
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY,
 )
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
