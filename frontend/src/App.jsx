@@ -14,6 +14,7 @@ function Home() {
   const [error, setError] = useState(null)
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
+  const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
   
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
@@ -107,6 +108,8 @@ function Home() {
     const currentQuery = textToSubmit || queryText
     if (!currentQuery.trim() || loading) return
 
+    setLastSubmittedQuery(currentQuery)
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
     }
@@ -182,6 +185,10 @@ function Home() {
     if (isListening) return
     submitQueryText(queryText)
   }
+
+  const handleRetry = useCallback(() => {
+    submitQueryText(lastSubmittedQuery)
+  }, [submitQueryText, lastSubmittedQuery])
 
   // Initialize Speech Recognition API with complete E2E Voice Flow
   useEffect(() => {
@@ -367,7 +374,7 @@ function Home() {
         </form>
 
         {/* Response & Error Rendering */}
-        <ResponseOutput response={response} loading={loading} error={error} />
+        <ResponseOutput response={response} loading={loading} error={error} onRetry={handleRetry} />
       </main>
 
       <footer className="landing-footer">

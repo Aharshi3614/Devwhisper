@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-function ResponseOutput({ response, loading, error }) {
+function ResponseOutput({ response, loading, error, onRetry }) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
@@ -71,7 +71,14 @@ function ResponseOutput({ response, loading, error }) {
   if (error) {
     return (
       <div className="response-container error">
-        <div className="error-title">⚠️ Query Failed</div>
+        <div className="response-header error-header">
+          <span className="error-title">⚠️ Query Failed</span>
+          {onRetry && (
+            <button onClick={onRetry} className="retry-button" title="Retry query">
+              🔄 Retry Request
+            </button>
+          )}
+        </div>
         <div className="error-message">{error}</div>
       </div>
     )
