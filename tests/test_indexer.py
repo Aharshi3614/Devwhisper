@@ -4,7 +4,7 @@ import os
 import tempfile
 
 from config import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB
-from indexer import chunk_file, collect_indexable_files
+from indexer import chunk_file, collect_indexable_files, get_file_chunks
 
 
 def test_supported_extensions_includes_markdown():
@@ -107,3 +107,77 @@ def test_collect_filters_unsupported_extensions():
 def test_collect_config_default():
     assert MAX_FILE_SIZE_BYTES == MAX_FILE_SIZE_MB * 1024 * 1024
     assert MAX_FILE_SIZE_MB == 1
+
+def test_get_file_chunks_includes_symbols_for_python():
+    """Python files produce both symbol and line chunks."""
+    source = (
+        "def preprocess(data):\n"
+        '    """Clean data."""\n'
+        "    return data.dropna()\n"
+        "\n"
+        "class Model:\n"
+        "    def train(self):\n"
+        "        pass\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(source)
+        tmp_path = f.name
+
+    try:
+        chunks = get_file_chunks(tmp_path, chunk_size=5)
+        sym_chunks = [c for c in chunks if c.get("is_symbol")]
+        line_chunks = [c for c in chunks if not c.get("is_symbol")]
+
+        assert len(sym_chunks) == 3
+        names = {c["symbol_name"] for c in sym_chunks}
+        assert names == {"preprocess", "Model", "train"}
+
+        assert len(line_chunks) > 0
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_get_file_chunks_no_symbols_for_markdown():
+    """Markdown files produce only line chunks."""
+    md = "# Title\n\nSome text.\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write(md)
+        tmp_path = f.name
+
+    try:
+        chunks = get_file_chunks(tmp_path)
+        sym_chunks = [c for c in chunks if c.get("is_symbol")]
+        line_chunks = [c for c in chunks if not c.get("is_symbol")]
+
+        assert sym_chunks == []
+        assert len(line_chunks) > 0
+        assert all(c.get("is_symbol") is False for c in line_chunks)
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_symbol_chunk_has_expected_metadata():
+    """Symbol chunks carry the metadata fields the retriever needs."""
+    source = (
+        'class Processor:\n'
+        '    """Process things."""\n'
+        "\n"
+        "    def run(self):\n"
+        '        """Run it."""\n'
+        "        pass\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(source)
+        tmp_path = f.name
+
+    try:
+        chunks = get_file_chunks(tmp_path)
+        sym = next(c for c in chunks if c.get("symbol_name") == "run")
+        assert sym["symbol_type"] == "method"
+        assert sym["parent_class"] == "Processor"
+        assert sym["docstring"] == "Run it."
+        assert sym["start_line"] == 4
+        assert sym["end_line"] == 6
+        assert sym["is_symbol"] is True
+    finally:
+        os.unlink(tmp_path)
