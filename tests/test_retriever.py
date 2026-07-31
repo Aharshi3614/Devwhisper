@@ -52,7 +52,7 @@ def test_retrieve_formats_ranked_results(monkeypatch):
     assert "Result 1:" in context
     assert "File: pipeline.py" in context
     assert "Function: preprocess" in context
-    assert "Start Line: 12" in context
+    assert "Location: Line 12" in context
     assert "Result 2:" in context
     assert "Function: train_model" in context
 
@@ -86,7 +86,7 @@ def test_retrieve_uses_safe_defaults_for_missing_payload_fields(monkeypatch):
 
     assert "File: unknown" in context
     assert "Function: unknown" in context
-    assert "Start Line: ?" in context
+    assert "Location: Line ?" in context
     assert "Code:\n\n" in context
 
 
@@ -195,3 +195,113 @@ def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     context = retriever.retrieve("test query", top_k=2)
     assert "Result 1:" in context
     assert "File: test.py" in context
+
+def test_exact_symbol_search_prefers_metadata_match(monkeypatch):
+    """Symbol chunks with matching symbol_name get exact metadata hits."""
+    monkeypatch.setattr(
+        retriever, "_bm25_data",
+        {
+            "bm25": MagicMock(),
+            "chunks": [
+                {"text": "def preprocess(data): pass", "symbol_name": "preprocess", "is_symbol": True},
+                {"text": "def preprocess_data(x): pass", "symbol_name": "preprocess_data", "is_symbol": True},
+                {"text": "some random text", "is_symbol": False},
+            ],
+            "corpus": ["def preprocess(data): pass", "def preprocess_data(x): pass", "some random text"],
+        }
+    )
+    results = retriever._exact_symbol_search(["preprocess"], top_k=5)
+    names = [r.get("symbol_name") for r in results]
+    assert "preprocess" in names
+    assert "preprocess_data" not in names
+
+
+def test_retrieve_uses_symbol_metadata_in_context(monkeypatch):
+    """Context formatting shows symbol metadata when available."""
+    vector = [0.1, 0.2, 0.3]
+
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = vector
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point(
+            {
+                "file": "pipeline.py",
+                "start_line": 12,
+                "end_line": 25,
+                "text": "def preprocess(data):\\n    return data.dropna()",
+                "symbol_name": "preprocess",
+                "symbol_type": "function",
+                "docstring": "Clean the data.",
+            }
+        ),
+    ]
+
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    context = retriever.retrieve("What does preprocess do?", top_k=1)
+
+    assert "Function: preprocess" in context
+    assert "Location: Lines 12-25" in context
+    assert "Docstring: Clean the data." in context
+
+
+def test_retrieve_shows_method_with_parent_class(monkeypatch):
+    """Method symbols display as ClassName.method_name."""
+    vector = [0.1, 0.2, 0.3]
+
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = vector
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point(
+            {
+                "file": "model.py",
+                "start_line": 8,
+                "end_line": 10,
+                "text": "    def train(self):\\n        pass",
+                "symbol_name": "train",
+                "symbol_type": "method",
+                "parent_class": "Model",
+            }
+        ),
+    ]
+
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    context = retriever.retrieve("How do I train the model?", top_k=1)
+
+    assert "Method: Model.train" in context
+    assert "Location: Lines 8-10" in context
+
+
+def test_retrieve_falls_back_to_regex_for_line_chunks(monkeypatch):
+    """Non-symbol chunks still use the old def-line regex fallback."""
+    vector = [0.1, 0.2, 0.3]
+
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = vector
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point(
+            {
+                "file": "utils.py",
+                "start_line": 3,
+                "text": "def helper():\\n    pass",
+                "is_symbol": False,
+            }
+        ),
+    ]
+
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    context = retriever.retrieve("What is helper?", top_k=1)
+
+    assert "Function: helper" in context
+    assert "Location: Line 3" in context
