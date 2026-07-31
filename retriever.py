@@ -1,3 +1,31 @@
+"""
+retriever.py — Hybrid retrieval engine for DevWhisper.
+
+This module implements the core search functionality that powers DevWhisper's
+codebase Q&A. It combines three retrieval strategies via Reciprocal Rank Fusion (RRF):
+
+    1. Dense vector search (Qdrant + sentence-transformers embeddings)
+    2. Sparse keyword search (BM25 over tokenized code chunks)
+    3. Exact symbol matching (function/class name extraction from queries)
+
+The fused results are formatted into a structured context string suitable for
+LLM consumption, including file paths, function names, and line numbers.
+
+Key components:
+    - retrieve(): Main entry point — hybrid search + context formatting.
+    - _keyword_search(): BM25-based keyword retrieval.
+    - _extract_symbols(): Heuristic symbol extraction from natural language queries.
+    - _exact_symbol_search(): Direct symbol name matching in chunks.
+    - _rrf_fusion(): Reciprocal Rank Fusion to combine ranked lists.
+    - check_embedding_version(): Warns if indexed embeddings differ from config.
+    - get_repository_metadata(): Reads indexing metadata from .index_cache.json.
+
+Dependencies:
+    - QdrantClient (vector DB)
+    - SentenceTransformer (dense embeddings)
+    - rank_bm25 (sparse keyword search)
+"""
+
 import json
 import os
 import pickle
@@ -20,25 +48,39 @@ from config import (
 )
 from logger import logger
 
+# ---------------------------------------------------------------------------
+# Qdrant client and embedder (module-level singletons)
+# ---------------------------------------------------------------------------
 client = QdrantClient(
     url=QDRANT_URL,
     api_key=QDRANT_API_KEY,
 )
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 
-#Load BM25 index for hybrid retrieval
-_bm25_data= None
+# ---------------------------------------------------------------------------
+# BM25 index (lazy-loaded at import time)
+# ---------------------------------------------------------------------------
+_bm25_data = None
 try:
     with open(BM25_INDEX_PATH, "rb") as f:
         _bm25_data = pickle.load(f)
-    logger.info(f"BM25 index loaded from {BM25_INDEX_PATH}")
+        logger.info(f"BM25 index loaded from {BM25_INDEX_PATH}")
 except FileNotFoundError:
-    logger.info("BM25 index not found - keyword search disabled")
+    logger.info("BM25 index not found — keyword search disabled")
 except Exception as e:
-    logger.warning(f"Failed to loadBM25 index: {e}")
+    logger.warning(f"Failed to load BM25 index: {e}")
+
 
 def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
-    """Retrieve project-level repository metadata."""
+    """
+    Retrieve project-level repository metadata from the indexing cache.
+
+    Args:
+        metadata_path: Path to the .index_cache.json file.
+
+    Returns:
+        Dict with metadata (repository_name, indexed_file_count, etc.) or empty dict.
+    """
     if not os.path.exists(metadata_path):
         return {}
     try:
@@ -55,20 +97,42 @@ def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
             return metadata
     return {}
 
-def _tokenize(text:str) -> list[str]:
-    """Spilt code text into lowercased word tokens for BM25"""
+
+def _tokenize(text: str) -> list[str]:
+    """
+    Split code text into lowercased word tokens for BM25 matching.
+
+    Args:
+        text: Raw text to tokenize.
+
+    Returns:
+        List of lowercased word tokens.
+    """
     return [t.lower() for t in re.findall(r"\b\w+\b", text)]
 
+
 def _keyword_search(query: str, top_k: int = HYBRID_TOP_K) -> list[dict]:
-    """BM25 keyword search. Returns chunks with 'bm25_score' and unique '_idx'."""
+    """
+    BM25 keyword search over the indexed code chunks.
+
+    Args:
+        query: Natural language or code query string.
+        top_k: Maximum number of results to return.
+
+    Returns:
+        List of chunk dicts augmented with 'bm25_score' and unique '_idx'.
+        Returns empty list if BM25 index is not loaded.
+    """
     if _bm25_data is None:
         return []
+
     tokenize_query = _tokenize(query)
     bm25 = _bm25_data["bm25"]
     scores = bm25.get_scores(tokenize_query)
     top_indices = sorted(
         range(len(scores)), key=lambda i: scores[i], reverse=True
     )[:top_k]
+
     results = []
     for idx in top_indices:
         if scores[idx] > 0:
@@ -78,8 +142,22 @@ def _keyword_search(query: str, top_k: int = HYBRID_TOP_K) -> list[dict]:
             results.append(chunk)
     return results
 
+
 def _extract_symbols(query: str) -> list[str]:
-    """Extract possible code symbol names from a natural language query."""
+    """
+    Extract possible code symbol names from a natural language query.
+
+    Uses three heuristics:
+        1. Words followed by '(' — likely function calls.
+        2. CamelCase words — likely class names.
+        3. snake_case words — likely function/variable names.
+
+    Args:
+        query: User's natural language query.
+
+    Returns:
+        List of unique symbol name candidates.
+    """
     symbols = set()
     for m in re.finditer(r"(\w+)\s*\(", query):
         symbols.add(m.group(1))
@@ -89,10 +167,21 @@ def _extract_symbols(query: str) -> list[str]:
         symbols.add(m.group(1))
     return list(symbols)
 
+
 def _exact_symbol_search(symbols: list[str], top_k: int = HYBRID_TOP_K) -> list[dict]:
-    """Find chunks containing exact symbol name matches, ranked by match count"""
+    """
+    Find chunks containing exact symbol name matches, ranked by match count.
+
+    Args:
+        symbols: List of symbol names to search for.
+        top_k: Maximum number of results to return.
+
+    Returns:
+        List of chunk dicts augmented with 'exact_match_count' and '_idx'.
+    """
     if not symbols or _bm25_data is None:
         return []
+
     matches = []
     for idx, chunk in enumerate(_bm25_data["chunks"]):
         text_lower = chunk["text"].lower()
@@ -102,23 +191,40 @@ def _exact_symbol_search(symbols: list[str], top_k: int = HYBRID_TOP_K) -> list[
             result["exact_match_count"] = count
             result["_idx"] = f"s_{idx}"
             matches.append(result)
+
     matches.sort(key=lambda x: -x["exact_match_count"])
     return matches[:top_k]
 
+
 def _rrf_fusion(
-        result_lists: list[list[dict]],
-        k: int = RRF_K,
-        final_top_k: int = HYBRID_TOP_K
+    result_lists: list[list[dict]],
+    k: int = RRF_K,
+    final_top_k: int = HYBRID_TOP_K,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion - fuse multiple ranked result lists by position"""
+    """
+    Reciprocal Rank Fusion — combine multiple ranked result lists by position.
+
+    RRF score = Σ 1 / (k + rank + 1) for each document across all lists.
+    Documents appearing in multiple lists get boosted.
+
+    Args:
+        result_lists: List of ranked result lists (each a list of chunk dicts).
+        k: RRF constant (default 60) — dampens the influence of low ranks.
+        final_top_k: Number of top-fused results to return.
+
+    Returns:
+        List of chunk dicts augmented with 'rrf_score', sorted by score descending.
+    """
     scores: dict[str, float] = {}
     doc_map: dict[str, dict] = {}
+
     for results in result_lists:
-        for rank,doc in enumerate(results):
+        for rank, doc in enumerate(results):
             idx = str(doc.get("_idx", id(doc)))
             scores[idx] = scores.get(idx, 0) + 1.0 / (k + rank + 1)
             if idx not in doc_map:
                 doc_map[idx] = doc.copy()
+
     ranked = sorted(scores.items(), key=lambda x: -x[1])
     final = []
     for idx, score in ranked[:final_top_k]:
@@ -127,8 +233,13 @@ def _rrf_fusion(
         final.append(doc)
     return final
 
-def check_embedding_version():
-    """Verify that the embedding version matches the configured version."""
+
+def check_embedding_version() -> None:
+    """
+    Verify that the embedding version in the index matches the configured version.
+
+    Logs a warning if a mismatch is detected, advising re-indexing.
+    """
     metadata = get_repository_metadata()
     if metadata:
         repo_version = metadata.get("embedding_version")
@@ -143,10 +254,30 @@ def retrieve(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
-):
-    """Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF."""
+) -> str | tuple[str, list[str]]:
+    """
+    Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF.
+
+    Pipeline:
+        1. Check embedding version compatibility.
+        2. Encode query → dense vector search in Qdrant.
+        3. BM25 keyword search over indexed chunks.
+        4. Extract symbols from query → exact symbol match search.
+        5. Fuse all non-empty result lists via RRF.
+        6. Format results into structured context for LLM consumption.
+
+    Args:
+        query: User's natural language or code query.
+        top_k: Number of top results to return after fusion.
+        include_sources: If True, also return the list of source filenames.
+
+    Returns:
+        If include_sources is False: formatted context string.
+        If include_sources is True: tuple of (formatted_context, unique_source_files).
+    """
     check_embedding_version()
 
+    # ── Dense vector search (Qdrant) ────────────────────────────────────
     vector = embedder.encode(query).tolist()
     query_limit = HYBRID_TOP_K if _bm25_data is not None else top_k
     qdrant_result = client.query_points(
@@ -166,17 +297,21 @@ def retrieve(
             "start_line": payload.get("start_line", "?"),
         })
 
+    # ── Sparse keyword search (BM25) ────────────────────────────────────
     keyword_chunks = _keyword_search(query, HYBRID_TOP_K)
 
+    # ── Exact symbol matching ──────────────────────────────────────────────
     symbols = _extract_symbols(query)
     symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K)
 
+    # ── Fuse results ──────────────────────────────────────────────────────
     all_nonempty_chunks = [r for r in [vector_chunks, keyword_chunks, symbol_chunks] if r]
     if len(all_nonempty_chunks) > 1:
         fused = _rrf_fusion(all_nonempty_chunks, final_top_k=top_k)
     else:
         fused = vector_chunks[:top_k]
 
+    # ── Format context for LLM ──────────────────────────────────────────
     structured_context = []
     sources = []
     for index, result in enumerate(fused):
@@ -187,6 +322,7 @@ def retrieve(
         if file and file != "unknown":
             sources.append(file)
 
+        # Heuristic: extract the first function name from the chunk
         function_name = "unknown"
         for line in code.split("\n"):
             if line.strip().startswith("def "):
@@ -211,3 +347,4 @@ Code:
         unique_sources = list(dict.fromkeys(sources))
         return formatted_context, unique_sources
     return formatted_context
+    
