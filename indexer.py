@@ -15,20 +15,23 @@ from config import (
     EMBEDDING_VERSION,
     INDEX_CHUNK_OVERLAP,
     INDEX_CHUNK_SIZE,
-    QDRANT_API_KEY_ENV,
+    MAX_FILE_SIZE_BYTES,
+    MAX_FILE_SIZE_MB,
+    QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
-    QDRANT_URL_ENV,
+    QDRANT_URL,
     SAMPLE_CODEBASE_DIRECTORY,
     SUPPORTED_EXTENSIONS,
     BM25_INDEX_PATH
 )
+from logger import logger
 
 import pickle
 from rank_bm25 import BM25Okapi
 
 client = QdrantClient(
-    url=os.getenv(QDRANT_URL_ENV),
-    api_key=os.getenv(QDRANT_API_KEY_ENV),
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY,
 )
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
@@ -41,7 +44,34 @@ progress_state = {
     "current_file": "",
     "status": "idle",  # idle | running | done | error
     "message": "",
+    "skipped": [],
+    "skipped_count": 0,
 }
+
+
+def collect_indexable_files(directory, max_bytes=None):
+    limit = MAX_FILE_SIZE_BYTES if max_bytes is None else max_bytes
+    files_to_index, skipped = [], []
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if os.path.splitext(file)[1].lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            path = os.path.join(root, file)
+            try:
+                size = os.path.getsize(path)
+            except OSError as exc:
+                logger.warning("Skipping unreadable file %s: %s", path, exc)
+                skipped.append({"path": path, "size_bytes": None, "reason": "unreadable"})
+                continue
+            if size > limit:
+                logger.warning(
+                    "Skipping oversized file %s (%.2f MB exceeds %.2f MB limit)",
+                    path, size / (1024 * 1024), limit / (1024 * 1024),
+                )
+                skipped.append({"path": path, "size_bytes": size, "reason": "oversized"})
+                continue
+            files_to_index.append(path)
+    return files_to_index, skipped
 
 
 def create_collection():
@@ -91,15 +121,15 @@ def index_directory(directory):
                 with open(".index_cache.json", "r", encoding="utf-8") as f:
                     before_cache_data = json.load(f)
             except Exception:
-                print("Warning: Corrupted .index_cache.json found.")
+                logger.warning("Corrupted .index_cache.json found.")
 
         if isinstance(before_cache_data, dict):
             metadata = before_cache_data.get("_metadata")
             if metadata and isinstance(metadata, dict):
                 repo_version = metadata.get("embedding_version")
                 if repo_version and repo_version != EMBEDDING_VERSION:
-                    print(
-                        f"Warning: Embedding version mismatch detected (repository version: {repo_version}, "
+                    logger.warning(
+                        f"Embedding version mismatch detected (repository version: {repo_version}, "
                         f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
                     )
 
@@ -108,16 +138,14 @@ def index_directory(directory):
         points = []
         cache_data = {}
 
-        # Collect all eligible files first so we know the total
-        all_files = [
-            os.path.join(root, file)
-            for root, _, files in os.walk(directory)
-            for file in files
-            if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS
-        ]
+        # Collect eligible files, skipping oversized/unreadable
+        all_files, skipped_files = collect_indexable_files(directory)
+        progress_state["skipped"] = skipped_files
+        progress_state["skipped_count"] = len(skipped_files)
         total_files = len(all_files)
         progress_state["total"] = total_files
-        progress_state["message"] = f"Found {total_files} file(s) to index"
+        skip_msg = f" ({len(skipped_files)} skipped)" if skipped_files else ""
+        progress_state["message"] = f"Found {total_files} file(s) to index{skip_msg}"
 
         for idx, path in enumerate(all_files, start=1):
             file = os.path.basename(path)
@@ -165,12 +193,9 @@ def index_directory(directory):
             print("\nNo changes detected. Nothing to upsert.")
 
         all_chunks = []
-        for root, _, files in os.walk(directory):
-            for file in files:
-                if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
-                    path = os.path.join(root, file)
-                    chunks = chunk_file(path)
-                    all_chunks.extend(chunks)
+        for path in all_files:
+            chunks = chunk_file(path)
+            all_chunks.extend(chunks)
 
         if all_chunks:
             tokenize_corpus = [tokenize(c["text"]) for c in all_chunks]
@@ -188,17 +213,20 @@ def index_directory(directory):
             "indexing_timestamp": datetime.now(timezone.utc).isoformat(),
             "indexed_file_count": len(cache_data),
             "embedding_model": EMBEDDING_MODEL_NAME,
-            "embedding_version": EMBEDDING_VERSION
+            "embedding_version": EMBEDDING_VERSION,
+            "skipped_files": skipped_files,
+            "max_file_size_mb": MAX_FILE_SIZE_MB,
         }
 
         with open(".index_cache.json", "w", encoding="utf-8") as f:
             json.dump(cache_data, f, indent=2, ensure_ascii=False)
 
+        skip_summary = f", {len(skipped_files)} file(s) skipped" if skipped_files else ""
         progress_state.update({
             "running": False,
             "percent": 100,
             "status": "done",
-            "message": f"Indexing complete. {total_files} file(s) processed, {len(points)} chunks uploaded.",
+            "message": f"Indexing complete. {total_files} file(s) processed{skip_summary}, {len(points)} chunks uploaded.",
         })
 
     except Exception as e:

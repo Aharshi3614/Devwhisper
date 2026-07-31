@@ -3,8 +3,8 @@
 import os
 import tempfile
 
-from config import SUPPORTED_EXTENSIONS
-from indexer import chunk_file
+from config import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB
+from indexer import chunk_file, collect_indexable_files
 
 
 def test_supported_extensions_includes_markdown():
@@ -53,3 +53,57 @@ def test_chunk_file_skips_empty_markdown():
         assert chunks == []
     finally:
         os.unlink(tmp_path)
+
+
+# --- collect_indexable_files ---
+
+def test_collect_skips_oversized_file():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        small_path = os.path.join(tmpdir, "small.py")
+        large_path = os.path.join(tmpdir, "large.py")
+        with open(small_path, "w") as f:
+            f.write("x = 1\n")
+        with open(large_path, "w") as f:
+            f.write("x\n" * 200)
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=100)
+
+        assert small_path in files
+        assert large_path not in files
+        assert len(skipped) == 1
+        assert skipped[0]["path"] == large_path
+        assert skipped[0]["reason"] == "oversized"
+
+
+def test_collect_keeps_file_at_exact_limit():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "exact.py")
+        content = "x\n" * 50
+        with open(path, "wb") as f:
+            f.write(content.encode())
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=len(content))
+
+        assert path in files
+        assert len(skipped) == 0
+
+
+def test_collect_filters_unsupported_extensions():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        py_path = os.path.join(tmpdir, "good.py")
+        txt_path = os.path.join(tmpdir, "bad.txt")
+        with open(py_path, "w") as f:
+            f.write("x = 1\n")
+        with open(txt_path, "w") as f:
+            f.write("hello\n")
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=1000)
+
+        assert py_path in files
+        assert txt_path not in files
+        assert len(skipped) == 0
+
+
+def test_collect_config_default():
+    assert MAX_FILE_SIZE_BYTES == MAX_FILE_SIZE_MB * 1024 * 1024
+    assert MAX_FILE_SIZE_MB == 1

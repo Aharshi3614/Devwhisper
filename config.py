@@ -62,14 +62,6 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number, got {value!r}") from exc
 
 
-# Environment variable names
-QDRANT_URL_ENV: Final = "QDRANT_URL"
-QDRANT_API_KEY_ENV: Final = "QDRANT_API_KEY"
-GROQ_API_KEY_ENV: Final = "GROQ_API_KEY"
-LLM_API_KEY_ENV: Final = "LLM_API_KEY"
-LLM_BASE_URL_ENV: Final = "LLM_BASE_URL"
-LLM_MODEL_ENV: Final = "LLM_MODEL"
-
 # Embedding and retrieval settings
 EMBEDDING_MODEL_NAME: Final = os.getenv(
     "EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2"
@@ -83,6 +75,11 @@ QDRANT_SIMILARITY_THRESHOLD: Final = _env_float(
     "QDRANT_SIMILARITY_THRESHOLD", 0.0
 )
 RETRIEVAL_TOP_K: Final = _env_int("RETRIEVAL_TOP_K", 6)
+
+# Cache settings
+CACHE_SIMILARITY_THRESHOLD: Final = _env_float(
+    "CACHE_SIMILARITY_THRESHOLD", 0.70
+)
 
 # Indexing settings
 INDEX_CHUNK_SIZE: Final = _env_or_json("INDEX_CHUNK_SIZE", 15)
@@ -102,12 +99,19 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
         f"INDEX_CHUNK_SIZE ({INDEX_CHUNK_SIZE}) must be greater than "
         f"INDEX_CHUNK_OVERLAP ({INDEX_CHUNK_OVERLAP})"
     )
-SUPPORTED_EXTENSIONS: Final = frozenset({".py" ,".md"})
+SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md"})
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
 )
 
-#Hybrid retrieval settings
+# Maximum file size for indexing
+MAX_FILE_SIZE_MB: Final = _env_or_json("MAX_FILE_SIZE_MB", 1)
+if MAX_FILE_SIZE_MB < 1:
+    raise ValueError(f"MAX_FILE_SIZE_MB must be >= 1, got {MAX_FILE_SIZE_MB}")
+MAX_FILE_SIZE_BYTES: Final = MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+# Hybrid retrieval settings
 RRF_K: Final = 60
 HYBRID_TOP_K: Final = _env_int("HYBRID_TOP_K", 20)
 BM25_INDEX_PATH: Final = ".bm_index.pkl"
@@ -116,3 +120,46 @@ BM25_INDEX_PATH: Final = ".bm_index.pkl"
 DEFAULT_LLM_BASE_URL: Final = "https://api.groq.com/openai/v1"
 DEFAULT_GROQ_MODEL: Final = "llama-3.3-70b-versatile"
 DEFAULT_OPENAI_COMPATIBLE_MODEL: Final = "deepseek-v4-flash"
+
+# Resolved environment variable values (import these instead of calling os.getenv)
+QDRANT_URL: Final[str | None] = os.getenv("QDRANT_URL")          # Qdrant cluster URL
+QDRANT_API_KEY: Final[str | None] = os.getenv("QDRANT_API_KEY")  # Qdrant API key
+GROQ_API_KEY: Final[str | None] = os.getenv("GROQ_API_KEY")      # Groq LLM API key
+LLM_API_KEY: Final[str | None] = os.getenv("LLM_API_KEY")        # Custom LLM API key (overrides Groq)
+LLM_BASE_URL: Final[str] = os.getenv("LLM_BASE_URL", DEFAULT_LLM_BASE_URL)  # Custom LLM base URL
+LLM_MODEL: Final[str | None] = os.getenv("LLM_MODEL")            # Custom LLM model name
+
+# Public API: explicitly list what downstream modules should import
+__all__ = [
+    # Embedding & retrieval
+    "EMBEDDING_MODEL_NAME",
+    "EMBEDDING_DIMENSIONS",
+    "EMBEDDING_VERSION",
+    "QDRANT_COLLECTION_NAME",
+    "QDRANT_SIMILARITY_THRESHOLD",
+    "RETRIEVAL_TOP_K",
+    # Cache
+    "CACHE_SIMILARITY_THRESHOLD",
+    # Indexing
+    "INDEX_CHUNK_SIZE",
+    "INDEX_CHUNK_OVERLAP",
+    "SUPPORTED_EXTENSIONS",
+    "SAMPLE_CODEBASE_DIRECTORY",
+    "MAX_FILE_SIZE_MB",
+    "MAX_FILE_SIZE_BYTES",
+    # Hybrid retrieval
+    "RRF_K",
+    "HYBRID_TOP_K",
+    "BM25_INDEX_PATH",
+    # LLM
+    "DEFAULT_LLM_BASE_URL",
+    "DEFAULT_GROQ_MODEL",
+    "DEFAULT_OPENAI_COMPATIBLE_MODEL",
+    # Resolved env vars
+    "QDRANT_URL",
+    "QDRANT_API_KEY",
+    "GROQ_API_KEY",
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+]
