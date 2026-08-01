@@ -189,20 +189,12 @@ def check_embedding_version():
                 f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
             )
 
-
-def retrieve(
+def _vector_search(
     query: str,
-    top_k: int = RETRIEVAL_TOP_K,
-    include_sources: bool = False,
+    top_k: int,
     metadata_filter: dict | None = None,
-):
-    """Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF with preprocessing & metadata filtering."""
-    check_embedding_version()
-
-    query = preprocess_query(query)
-    if not query:
-        return ("", []) if include_sources else ""
-
+) -> list[dict]:
+    """Perform vector search and return formatted vector chunks."""
     vector = embedder.encode(query).tolist()
     query_limit = HYBRID_TOP_K if _bm25_data is not None else top_k
     qdrant_filter = _build_qdrant_filter(metadata_filter)
@@ -218,13 +210,31 @@ def retrieve(
     vector_chunks = []
     for idx, point in enumerate(qdrant_result):
         payload = point.payload or {}
-        vector_chunks.append({
-            "_idx": f"v_{idx}",
-            "text": payload.get("text", ""),
-            "file": payload.get("file", "unknown"),
-            "start_line": payload.get("start_line", "?"),
-            **payload,
-        })
+        vector_chunks.append(
+            {
+                "_idx": f"v_{idx}",
+                "text": payload.get("text", ""),
+                "file": payload.get("file", "unknown"),
+                "start_line": payload.get("start_line", "?"),
+                **payload,
+            }
+        )
+
+    return vector_chunks
+def retrieve(
+    query: str,
+    top_k: int = RETRIEVAL_TOP_K,
+    include_sources: bool = False,
+    metadata_filter: dict | None = None,
+):
+    """Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF with preprocessing & metadata filtering."""
+    check_embedding_version()
+
+    query = preprocess_query(query)
+    if not query:
+        return ("", []) if include_sources else ""
+
+    vector_chunks = _vector_search(query, top_k, metadata_filter)
 
     keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter)
 
