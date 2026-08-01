@@ -171,8 +171,8 @@ def test_exact_symbol_search_prefers_metadata_match(monkeypatch):
     assert "preprocess_data" not in names
 
 
-def test_retrieve_uses_symbol_metadata_in_context(monkeypatch):
-    """Context formatting shows symbol metadata when available."""
+def test_retrieve_shows_method_with_parent_class(monkeypatch):
+    """Method symbols display as ClassName.method_name."""
     vector = [0.1, 0.2, 0.3]
 
     mock_embedder = MagicMock()
@@ -182,13 +182,13 @@ def test_retrieve_uses_symbol_metadata_in_context(monkeypatch):
     mock_client.query_points.return_value.points = [
         _point(
             {
-                "file": "pipeline.py",
-                "start_line": 12,
-                "end_line": 25,
-                "text": "def preprocess(data):\\n    return data.dropna()",
-                "symbol_name": "preprocess",
-                "symbol_type": "function",
-                "docstring": "Clean the data.",
+                "file": "model.py",
+                "start_line": 8,
+                "end_line": 10,
+                "text": " def train(self):\\n pass",
+                "symbol_name": "train",
+                "symbol_type": "method",
+                "parent_class": "Model",
             }
         ),
     ]
@@ -196,11 +196,10 @@ def test_retrieve_uses_symbol_metadata_in_context(monkeypatch):
     monkeypatch.setattr(retriever, "embedder", mock_embedder)
     monkeypatch.setattr(retriever, "client", mock_client)
 
-    context = retriever.retrieve("What does preprocess do?", top_k=1)
+    context = retriever.retrieve("How do I train the model?", top_k=1)
 
-    assert "Function: preprocess" in context
-    assert "Location: Lines 12-25" in context
-    assert "Docstring: Clean the data." in context
+    assert "Method: Model.train" in context
+    assert "Location: Lines 8-10" in context
 
 
 def test_retrieve_shows_method_with_parent_class(monkeypatch):
