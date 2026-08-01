@@ -221,6 +221,8 @@ def _vector_search(
         )
 
     return vector_chunks
+
+    
 def retrieve(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
