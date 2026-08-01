@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
 import ThemeToggle from './components/ThemeToggle.jsx'
@@ -15,12 +15,14 @@ function Home() {
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
   const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
-  
+  const navigate = useNavigate()
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
   const abortControllerRef = useRef(null)
   const mockTimerRef = useRef(null)
   const latestTranscriptRef = useRef('')
+  const submitQueryTextRef = useRef(null)
+  const redirectedRef = useRef(false)
 
   // Retrieve or generate a stable session ID so query history shows up in history panel
   const [sessionId, setSessionId] = useState(() => {
@@ -43,6 +45,8 @@ function Home() {
     const newId = 'web-' + Math.random().toString(36).substring(2, 9)
     sessionStorage.setItem('devwhisper_session_id', newId)
     setSessionId(newId)
+    // Allow the fresh session to get its own hand-off to /history.
+    redirectedRef.current = false
 
     try {
       const res = await fetch('/reset', {
@@ -185,10 +189,26 @@ function Home() {
     if (isListening) return
     submitQueryText(queryText)
   }
-
   const handleRetry = useCallback(() => {
     submitQueryText(lastSubmittedQuery)
   }, [submitQueryText, lastSubmittedQuery])
+
+   // Keep a ref pointing at the latest submitQueryText so the mount-only
+  // speech-recognition effect never goes stale (and never re-runs cleanup,
+  // which would abort in-flight /stream requests).
+  useEffect(() => {
+    submitQueryTextRef.current = submitQueryText
+  }, [submitQueryText])
+
+  // After the first exchange completes, hand off to the conversation view.
+  // Home is a launchpad: you type one question, then the full conversation
+  // (and follow-ups) continues on /history?session_id=...
+  useEffect(() => {
+    if (!loading && response && !redirectedRef.current) {
+      redirectedRef.current = true
+      navigate(`/history?session_id=${encodeURIComponent(sessionId)}`)
+    }
+  }, [loading, response, sessionId, navigate])
 
   // Initialize Speech Recognition API with complete E2E Voice Flow
   useEffect(() => {
@@ -240,7 +260,7 @@ function Home() {
           setIsListening(false)
           const finalQuery = latestTranscriptRef.current.trim()
           if (finalQuery) {
-            submitQueryText(finalQuery)
+            submitQueryTextRef.current(finalQuery)
           }
         }
       }
@@ -264,7 +284,7 @@ function Home() {
         abortControllerRef.current.abort()
       }
     }
-  }, [submitQueryText])
+  }, [])
 
   const handleMicClick = () => {
     if (speechSupported && recognitionRef.current) {

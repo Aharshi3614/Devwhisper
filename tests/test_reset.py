@@ -82,7 +82,7 @@ def test_reset_on_empty_sessions(client):
 
 
 def test_history_empty_after_reset(client):
-    """GET /history should return no session IDs after a reset."""
+    """GET /history should return no sessions after a reset."""
     conversation_sessions["session_x"] = {
         "history": ["User: q\nAssistant: a"],
         "last_used": 3000.0,
@@ -94,7 +94,41 @@ def test_history_empty_after_reset(client):
     assert response.status_code == 200
 
     history_resp = client.get("/history")
-    assert history_resp.json() == {"session_ids": []}
+    assert history_resp.json() == {"session_ids": [], "sessions": []}
+
+
+def test_history_lists_session_metadata(client):
+    """GET /history should list sessions with preview, timestamps, and counts."""
+    conversation_sessions["session_a"] = {
+        "history": ["User: first question\nAssistant: first answer"],
+        "last_used": 1000.0,
+    }
+    conversation_sessions["session_b"] = {
+        "history": [
+            "User: second question\nAssistant: second answer",
+            "User: third question\nAssistant: third answer",
+        ],
+        "last_used": 2000.0,
+    }
+
+    response = client.get("/history")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["session_ids"] == ["session_a", "session_b"]
+    sessions = {s["session_id"]: s for s in data["sessions"]}
+    assert sessions["session_a"] == {
+        "session_id": "session_a",
+        "last_used": 1000.0,
+        "message_count": 1,
+        "preview": "first question",
+    }
+    assert sessions["session_b"] == {
+        "session_id": "session_b",
+        "last_used": 2000.0,
+        "message_count": 2,
+        "preview": "second question",
+    }
 
 
 def test_health_unaffected_after_reset(client):
