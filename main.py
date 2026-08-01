@@ -418,13 +418,37 @@ def get_history(session_id: str | None = None):
     """
     Retrieve conversation history.
 
-    - GET /history          → returns all session IDs
+    - GET /history          → returns all session IDs + lightweight metadata
     - GET /history?session_id=xxx → returns history for that session
+
+    The list response includes a ``sessions`` array with per-session metadata
+    (last-used timestamp, message count, and a short preview of the first
+    question) so the frontend can group and label sessions without fetching
+    each conversation. ``session_ids`` is kept for backward compatibility.
     """
     with session_lock:
         if session_id:
             session = conversation_sessions.get(session_id)
             history = list(session["history"]) if session else []
             return {"session_id": session_id, "history": history}
+
+        sessions_info = []
+        for sid, data in conversation_sessions.items():
+            history_list = data.get("history", [])
+            preview = ""
+            if history_list:
+                first_entry = history_list[0]
+                user_line = next(
+                    (line for line in first_entry.split("\n") if line.startswith("User: ")),
+                    None,
+                )
+                preview = user_line[6:] if user_line else ""
+            sessions_info.append({
+                "session_id": sid,
+                "last_used": data.get("last_used", 0),
+                "message_count": len(history_list),
+                "preview": preview,
+            })
+
         all_session_ids = list(conversation_sessions.keys())
-    return {"session_ids": all_session_ids}
+    return {"session_ids": all_session_ids, "sessions": sessions_info}

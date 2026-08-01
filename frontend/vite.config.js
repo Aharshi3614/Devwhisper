@@ -6,6 +6,14 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
+      '/stream': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/reset': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
       '/history': {
         target: 'http://localhost:8000',
         changeOrigin: true
@@ -15,6 +23,14 @@ export default defineConfig({
         changeOrigin: true
       },
       '/health': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/statistics': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/index': {
         target: 'http://localhost:8000',
         changeOrigin: true
       },
