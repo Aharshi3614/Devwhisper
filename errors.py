@@ -1,24 +1,39 @@
-"""
-errors.py — Standardized error response utilities for DevWhisper.
+"""errors.py — Standardized error response utilities for DevWhisper.
 
-This module provides helper functions to generate consistent JSON error
+This module provides helper functions and models to generate consistent JSON error
 responses across all API endpoints. Using a centralized error format ensures
 clients can reliably parse error details regardless of which endpoint fails.
 
+Expected error shape:
+    {
+        "status": "error",
+        "code": <int>,
+        "message": <str>
+    }
+
 Usage:
-    from errors import error_response
+    from errors import ErrorResponse, error_response
     return error_response(400, "Invalid query parameter")
 """
 
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse
+
+
+class ErrorResponse(BaseModel):
+    """Pydantic model for a standardized API error response."""
+
+    status: str = "error"
+    code: int
+    message: str
 
 
 def error_response(status_code: int, detail: str) -> JSONResponse:
     """
     Create a standardized JSON error response.
 
-    Wraps the error detail in a consistent structure:
-        { "error": { "status_code": <int>, "detail": <str> } }
+    Returns a flat structure matching the ErrorResponse schema:
+    { "status": "error", "code": <status_code>, "message": <detail> }
 
     Args:
         status_code: HTTP status code (e.g., 400, 401, 500).
@@ -30,10 +45,8 @@ def error_response(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={
-            "error": {
-                "status_code": status_code,
-                "detail": detail,
-            }
+            "status": "error",
+            "code": status_code,
+            "message": detail,
         },
     )
-    
