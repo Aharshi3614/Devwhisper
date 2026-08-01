@@ -131,7 +131,11 @@ def _extract_symbols(query: str) -> list[str]:
         symbols.add(m.group(1))
     return list(symbols)
 
-def _exact_symbol_search(symbols: list[str], top_k: int = HYBRID_TOP_K) -> list[dict]:
+def _exact_symbol_search(
+    symbols: list[str],
+    top_k: int = HYBRID_TOP_K,
+    metadata_filter: dict | None = None,
+) -> list[dict]:
     """Find chunks with exact symbol name matches.
 
     Symbol chunks (is_symbol=True) are matched by metadata equality first.
@@ -141,6 +145,8 @@ def _exact_symbol_search(symbols: list[str], top_k: int = HYBRID_TOP_K) -> list[
         return []
     matches = []
     for idx, chunk in enumerate(_bm25_data["chunks"]):
+        if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
+            continue
         chunk_name = chunk.get("symbol_name")
         is_symbol = chunk.get("is_symbol", False)
 
