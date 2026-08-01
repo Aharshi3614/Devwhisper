@@ -1,29 +1,29 @@
-"""
-retriever.py — Hybrid retrieval engine for DevWhisper.
+"""retriever.py — Hybrid retrieval engine for DevWhisper.
 
 This module implements the core search functionality that powers DevWhisper's
 codebase Q&A. It combines three retrieval strategies via Reciprocal Rank Fusion (RRF):
 
-    1. Dense vector search (Qdrant + sentence-transformers embeddings)
-    2. Sparse keyword search (BM25 over tokenized code chunks)
-    3. Exact symbol matching (function/class name extraction from queries)
+  1. Dense vector search (Qdrant + sentence-transformers embeddings)
+  2. Sparse keyword search (BM25 over tokenized code chunks)
+  3. Exact symbol matching (function/class name extraction from queries)
 
 The fused results are formatted into a structured context string suitable for
-LLM consumption, including file paths, function names, and line numbers.
+LLM consumption, including file paths, symbol names, line numbers, and docstrings.
 
 Key components:
-    - retrieve(): Main entry point — hybrid search + context formatting.
-    - _keyword_search(): BM25-based keyword retrieval.
-    - _extract_symbols(): Heuristic symbol extraction from natural language queries.
-    - _exact_symbol_search(): Direct symbol name matching in chunks.
-    - _rrf_fusion(): Reciprocal Rank Fusion to combine ranked lists.
-    - check_embedding_version(): Warns if indexed embeddings differ from config.
-    - get_repository_metadata(): Reads indexing metadata from .index_cache.json.
+  - retrieve(): Main entry point — hybrid search + context formatting.
+  - preprocess_query(): Normalize user queries before embedding/search.
+  - _keyword_search(): BM25-based keyword retrieval.
+  - _extract_symbols(): Heuristic symbol extraction from natural language queries.
+  - _exact_symbol_search(): Direct symbol name matching in chunks (metadata-aware).
+  - _rrf_fusion(): Reciprocal Rank Fusion to combine ranked lists.
+  - check_embedding_version(): Warns if indexed embeddings differ from config.
+  - get_repository_metadata(): Reads indexing metadata from .index_cache.json.
 
 Dependencies:
-    - QdrantClient (vector DB)
-    - SentenceTransformer (dense embeddings)
-    - rank_bm25 (sparse keyword search)
+  - QdrantClient (vector DB)
+  - SentenceTransformer (dense embeddings)
+  - rank_bm25 (sparse keyword search)
 """
 
 import json
@@ -49,10 +49,7 @@ from logger import logger
 # ---------------------------------------------------------------------------
 # Qdrant client and embedder (module-level singletons)
 # ---------------------------------------------------------------------------
-client = QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY,
-)
+client = vector_store.client
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 
 # ---------------------------------------------------------------------------
@@ -106,7 +103,7 @@ def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
 
 
 def _tokenize(text: str) -> list[str]:
-    """Split code text into lowercased word tokens for BM25"""
+    """Split code text into lowercased word tokens for BM25."""
     return [t.lower() for t in re.findall(r"\b\w+\b", text)]
 
 
@@ -160,8 +157,8 @@ def _keyword_search(
                 chunk["bm25_score"] = float(scores[idx])
                 chunk["_idx"] = idx
                 results.append(chunk)
-                if len(results) >= top_k:
-                    break
+        if len(results) >= top_k:
+            break
     return results
 
 
@@ -170,9 +167,9 @@ def _extract_symbols(query: str) -> list[str]:
     Extract possible code symbol names from a natural language query.
 
     Uses three heuristics:
-        1. Words followed by '(' — likely function calls.
-        2. CamelCase words — likely class names.
-        3. snake_case words — likely function/variable names.
+      1. Words followed by '(' — likely function calls.
+      2. CamelCase words — likely class names.
+      3. snake_case words — likely function/variable names.
 
     Args:
         query: User's natural language query.
@@ -191,29 +188,36 @@ def _extract_symbols(query: str) -> list[str]:
 
 
 def _exact_symbol_search(
-    symbols: list[str], 
-    top_k: int = HYBRID_TOP_K, 
+    symbols: list[str],
+    top_k: int = HYBRID_TOP_K,
     metadata_filter: dict | None = None,
 ) -> list[dict]:
     """
-    Find chunks containing exact symbol name matches, ranked by match count.
+    Find chunks with exact symbol name matches, filtered by metadata, ranked by match count.
 
-    Args:
-        symbols: List of symbol names to search for.
-        top_k: Maximum number of results to return.
-
-    Returns:
-        List of chunk dicts augmented with 'exact_match_count' and '_idx'.
+    Symbol chunks (is_symbol=True) are matched by metadata equality first.
+    Line chunks fall back to text substring counting.
     """
     if not symbols or _bm25_data is None:
         return []
 
     matches = []
     for idx, chunk in enumerate(_bm25_data["chunks"]):
-        if not _matches_metadata_filter(chunk, metadata_filter):
+        if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
             continue
-        text_lower = chunk["text"].lower()
-        count = sum(text_lower.count(sym.lower()) for sym in symbols)
+        chunk_name = chunk.get("symbol_name")
+        is_symbol = chunk.get("is_symbol", False)
+
+        if is_symbol and chunk_name:
+            # Metadata-level exact match (case-insensitive)
+            count = sum(
+                1 for sym in symbols if chunk_name.lower() == sym.lower()
+            )
+        else:
+            # Fallback: text substring counting
+            text_lower = chunk["text"].lower()
+            count = sum(text_lower.count(sym.lower()) for sym in symbols)
+
         if count > 0:
             result = chunk.copy()
             result["exact_match_count"] = count
@@ -282,27 +286,34 @@ def retrieve(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
-) -> str | tuple[str, list[str]]:
+    metadata_filter: dict | None = None,
+):
     """
     Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF.
 
     Pipeline:
-        1. Check embedding version compatibility.
-        2. Encode query → dense vector search in Qdrant.
-        3. BM25 keyword search over indexed chunks.
-        4. Extract symbols from query → exact symbol match search.
-        5. Fuse all non-empty result lists via RRF.
-        6. Format results into structured context for LLM consumption.
+      1. Preprocess and normalize the query.
+      2. Check embedding version compatibility.
+      3. Encode query → dense vector search in Qdrant.
+      4. BM25 keyword search over indexed chunks.
+      5. Extract symbols from query → exact symbol match search.
+      6. Fuse all non-empty result lists via RRF.
+      7. Format results into structured context for LLM consumption.
 
     Args:
         query: User's natural language or code query.
         top_k: Number of top results to return after fusion.
         include_sources: If True, also return the list of source filenames.
+        metadata_filter: Optional key-value filter for metadata-constrained search.
 
     Returns:
         If include_sources is False: formatted context string.
         If include_sources is True: tuple of (formatted_context, unique_source_files).
     """
+    query = preprocess_query(query)
+    if not query:
+        return ("", []) if include_sources else ""
+
     check_embedding_version()
 
     # ── Dense vector search (Qdrant) ────────────────────────────────────
@@ -326,7 +337,12 @@ def retrieve(
             "text": payload.get("text", ""),
             "file": payload.get("file", "unknown"),
             "start_line": payload.get("start_line", "?"),
-            **payload,
+            "end_line": payload.get("end_line"),
+            "symbol_name": payload.get("symbol_name"),
+            "symbol_type": payload.get("symbol_type"),
+            "parent_class": payload.get("parent_class"),
+            "docstring": payload.get("docstring"),
+            "is_symbol": payload.get("is_symbol", False),
         })
 
     # ── Sparse keyword search (BM25) ────────────────────────────────────
@@ -354,22 +370,43 @@ def retrieve(
         if file and file != "unknown":
             sources.append(file)
 
-        # Heuristic: extract the first function name from the chunk
-        function_name = "unknown"
-        for line in code.split("\n"):
-            if line.strip().startswith("def "):
-                function_name = (
-                    line.strip().split("(")[0].replace("def ", "")
-                )
-                break
+        # Determine display name from symbol metadata or fallback regex
+        symbol_name = result.get("symbol_name")
+        symbol_type = result.get("symbol_type")
+        parent_class = result.get("parent_class")
+        docstring = result.get("docstring")
+        end_line = result.get("end_line")
+
+        if symbol_name:
+            if parent_class:
+                display_name = f"{parent_class}.{symbol_name}"
+            else:
+                display_name = symbol_name
+            entity_label = symbol_type.capitalize() if symbol_type else "Symbol"
+        else:
+            entity_label = "Function"
+            display_name = "unknown"
+            for line in code.split("\n"):
+                if line.strip().startswith("def "):
+                    display_name = (
+                        line.strip().split("(")[0].replace("def ", "")
+                    )
+                    break
+
+        location = f"Line {start_line}"
+        if end_line and end_line != start_line:
+            location = f"Lines {start_line}-{end_line}"
+
+        doc_block = ""
+        if docstring:
+            doc_block = f"Docstring: {docstring}\n"
 
         structured_context.append(
-            f"""
-Result {index + 1}:
+            f"""Result {index + 1}:
 File: {file}
-Function: {function_name}
-Start Line: {start_line}
-Code:
+{entity_label}: {display_name}
+Location: {location}
+{doc_block}Code:
 {code}
 """
         )
@@ -379,4 +416,3 @@ Code:
         unique_sources = list(dict.fromkeys(sources))
         return formatted_context, unique_sources
     return formatted_context
-    

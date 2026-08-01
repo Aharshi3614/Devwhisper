@@ -15,7 +15,7 @@ function Home() {
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
   const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
-  const navigate = useNavigate()
+  
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
   const abortControllerRef = useRef(null)
@@ -24,7 +24,9 @@ function Home() {
   const submitQueryTextRef = useRef(null)
   const redirectedRef = useRef(false)
 
-  // Retrieve or generate a stable session ID so query history shows up in history panel
+  const navigate = useNavigate()
+
+  // Retrieve or generate a stable session ID so that query history shows up in the history panel
   const [sessionId, setSessionId] = useState(() => {
     const key = 'devwhisper_session_id'
     const existing = sessionStorage.getItem(key)
@@ -34,7 +36,6 @@ function Home() {
     return newId
   })
 
-  // Clear conversation handler
   const handleClearChat = async () => {
     if (loading) return
 
@@ -189,20 +190,18 @@ function Home() {
     if (isListening) return
     submitQueryText(queryText)
   }
+
   const handleRetry = useCallback(() => {
     submitQueryText(lastSubmittedQuery)
   }, [submitQueryText, lastSubmittedQuery])
 
-   // Keep a ref pointing at the latest submitQueryText so the mount-only
-  // speech-recognition effect never goes stale (and never re-runs cleanup,
-  // which would abort in-flight /stream requests).
+  // Keep a ref pointing at the latest submitQueryText so the mount-only
+  // speech-recognition effect never goes stale
   useEffect(() => {
     submitQueryTextRef.current = submitQueryText
   }, [submitQueryText])
 
   // After the first exchange completes, hand off to the conversation view.
-  // Home is a launchpad: you type one question, then the full conversation
-  // (and follow-ups) continues on /history?session_id=...
   useEffect(() => {
     if (!loading && response && !redirectedRef.current) {
       redirectedRef.current = true
@@ -393,8 +392,8 @@ function Home() {
           </div>
         </form>
 
-        {/* Response & Error Rendering */}
-        <ResponseOutput response={response} loading={loading} error={error} onRetry={handleRetry} />
+        {/* Response Rendering */}
+        <ResponseOutput response={response} loading={loading} error={error} />
       </main>
 
       <footer className="landing-footer">

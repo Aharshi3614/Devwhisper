@@ -1,5 +1,4 @@
-"""
-indexer.py — Codebase indexing pipeline for DevWhisper.
+"""indexer.py — Codebase indexing pipeline for DevWhisper.
 
 This module handles the ingestion, chunking, embedding, and storage of source
 files into Qdrant (vector DB) and a local BM25 keyword index. It supports
@@ -7,20 +6,21 @@ both full and incremental re-indexing, file-size limits, and progress tracking
 for real-time monitoring via SSE.
 
 Key components:
-    - collect_indexable_files(): Walks the codebase directory and filters eligible files.
-    - create_collection(): (Re)creates the Qdrant vector collection.
-    - chunk_file(): Splits a file into overlapping line-based chunks.
-    - index_directory(): Main indexing orchestrator — full pipeline.
-    - get_file_hash(): Computes MD5 hash for incremental change detection.
-    - tokenize(): Simple word tokenizer for BM25.
+  - collect_indexable_files(): Walks the codebase directory and filters eligible files.
+  - create_collection(): (Re)creates the Qdrant vector collection.
+  - chunk_file(): Splits a file into overlapping line-based chunks.
+  - get_file_chunks(): Returns symbol chunks + line chunks for Python files.
+  - index_directory(): Main indexing orchestrator — full pipeline.
+  - get_file_hash(): Computes MD5 hash for incremental change detection.
+  - tokenize(): Simple word tokenizer for BM25.
 
 Progress tracking:
-    The global `progress_state` dict is updated throughout indexing and
-    consumed by the /index/progress SSE endpoint in main.py.
+  The global `progress_state` dict is updated throughout indexing and
+  consumed by the /index/progress SSE endpoint in main.py.
 
 Usage:
-    python indexer.py              # Full re-index
-    python indexer.py --incremental # Skip unchanged files
+  python indexer.py              # Full re-index
+  python indexer.py --incremental # Skip unchanged files
 """
 
 import hashlib
@@ -50,9 +50,11 @@ from config import (
     BM25_INDEX_PATH,
 )
 from logger import logger
+from symbol_parser import extract_symbols_from_file
 
 import pickle
 from rank_bm25 import BM25Okapi
+
 
 # ---------------------------------------------------------------------------
 # Qdrant client and embedder (module-level singletons)
@@ -62,6 +64,7 @@ client = QdrantClient(
     api_key=QDRANT_API_KEY,
 )
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+
 
 # ---------------------------------------------------------------------------
 # Shared progress state
@@ -156,7 +159,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
         chunk_size: Number of lines per chunk.
 
     Returns:
-        List of chunk dicts with keys: text, file, start_line.
+        List of chunk dicts with keys: text, file, start_line, is_symbol.
 
     Raises:
         ValueError: If chunk_size is not greater than INDEX_CHUNK_OVERLAP.
@@ -177,8 +180,38 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
                     "text": chunk,
                     "file": os.path.basename(filepath),
                     "start_line": index + 1,
+                    "is_symbol": False,
                 }
             )
+    return chunks
+
+
+def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
+    """Return all indexing chunks for *filepath*.
+
+    For Python files this includes both AST-extracted symbols and
+    traditional line-based chunks. For other supported extensions only
+    line-based chunks are returned.
+    """
+    chunks = []
+
+    if filepath.lower().endswith(".py"):
+        symbols = extract_symbols_from_file(filepath)
+        for sym in symbols:
+            chunks.append({
+                "text": sym.source,
+                "file": os.path.basename(filepath),
+                "start_line": sym.start_line,
+                "end_line": sym.end_line,
+                "symbol_name": sym.name,
+                "symbol_type": sym.symbol_type,
+                "parent_class": sym.parent_class,
+                "docstring": sym.docstring,
+                "is_symbol": True,
+            })
+
+    line_chunks = chunk_file(filepath, chunk_size=chunk_size)
+    chunks.extend(line_chunks)
     return chunks
 
 
@@ -190,21 +223,21 @@ def index_directory(directory: str) -> None:
     files whose mtime and hash match the previous run (stored in .index_cache.json).
 
     Steps:
-        1. Load previous cache (if incremental).
-        2. Collect eligible files (skip oversized / unreadable).
-        3. (Re)create Qdrant collection (unless incremental and exists).
-        4. For each file: chunk → embed → build PointStruct → batch upsert.
-        5. Build BM25 index from all chunks.
-        6. Save cache metadata (.index_cache.json).
+      1. Load previous cache (if incremental).
+      2. Collect eligible files (skip oversized / unreadable).
+      3. (Re)create Qdrant collection (unless incremental and exists).
+      4. For each file: chunk → embed → build PointStruct → batch upsert.
+      5. Build BM25 index from all chunks.
+      6. Save cache metadata (.index_cache.json).
 
     Args:
         directory: Root directory containing the codebase to index.
 
     Side effects:
-        - Updates global `progress_state`.
-        - Writes to Qdrant collection.
-        - Writes .bm_index.pkl (BM25 index).
-        - Writes .index_cache.json (metadata + file hashes).
+      - Updates global `progress_state`.
+      - Writes to Qdrant collection.
+      - Writes .bm_index.pkl (BM25 index).
+      - Writes .index_cache.json (metadata + file hashes).
     """
     progress_state.update({
         "running": True,
@@ -275,8 +308,13 @@ def index_directory(directory: str) -> None:
                     if before_cache_data[path]["hash"] == cache_data[path]["hash"]:
                         continue
 
-            chunks = chunk_file(path)
-            print(f"  {file} → {len(chunks)} chunks")
+            chunks = get_file_chunks(path)
+            line_count = sum(1 for c in chunks if not c.get("is_symbol"))
+            sym_count = sum(1 for c in chunks if c.get("is_symbol"))
+            msg = f" {file} → {line_count} line chunks"
+            if sym_count:
+                msg += f", {sym_count} symbols"
+            print(msg)
 
             for chunk in chunks:
                 vector = embedder.encode(chunk["text"]).tolist()
@@ -303,7 +341,7 @@ def index_directory(directory: str) -> None:
         # ── Build BM25 keyword index ─────────────────────────────────────
         all_chunks = []
         for path in all_files:
-            chunks = chunk_file(path)
+            chunks = get_file_chunks(path)
             all_chunks.extend(chunks)
 
         if all_chunks:
@@ -385,4 +423,3 @@ def tokenize(text: str) -> list[str]:
 
 if __name__ == "__main__":
     index_directory(SAMPLE_CODEBASE_DIRECTORY)
-    

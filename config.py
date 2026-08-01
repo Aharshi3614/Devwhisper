@@ -1,21 +1,20 @@
-"""
-config.py — Central configuration for DevWhisper.
+"""config.py — Central configuration for DevWhisper.
 
 This module consolidates all non-secret application configuration in one place.
 Model, Qdrant, indexing, and LLM settings are maintained here. Secrets (API keys,
 URLs) remain in environment variables and are resolved at import time.
 
 Configuration hierarchy (highest priority first):
-    1. Environment variables (os.getenv)
-    2. config.json file in project root
-    3. Hardcoded defaults in this module
+ 1. Environment variables (os.getenv)
+ 2. config.json file in project root
+ 3. Hardcoded defaults in this module
 
 Validation:
-    Several settings are validated at import time (e.g., chunk size constraints,
-    file size limits) to fail fast on misconfiguration.
+ Several settings are validated at import time (e.g., chunk size constraints,
+ file size limits) to fail fast on misconfiguration.
 
 Usage:
-    from config import EMBEDDING_MODEL_NAME, QDRANT_URL, etc.
+ from config import EMBEDDING_MODEL_NAME, QDRANT_URL, etc.
 """
 
 import json
@@ -131,7 +130,7 @@ EMBEDDING_MODEL_NAME: Final = os.getenv(
 EMBEDDING_DIMENSIONS: Final = _env_int("EMBEDDING_DIMENSIONS", 384)
 """Dimensionality of the embedding vectors (must match the model output)."""
 
-EMBEDDING_VERSION: Final = os.getenv("EMBEDDING_VERSION", "v1")
+EMBEDDING_VERSION: Final = os.getenv("EMBEDDING_VERSION", "v2")
 """Version tag for the embedding model — used to detect stale indexes."""
 
 QDRANT_COLLECTION_NAME: Final = os.getenv(
@@ -249,14 +248,6 @@ LLM_BASE_URL: Final[str] = os.getenv("LLM_BASE_URL", DEFAULT_LLM_BASE_URL)
 LLM_MODEL: Final[str | None] = os.getenv("LLM_MODEL")
 """Custom LLM model name (optional override)."""
 
-# Resolved environment variable values
-QDRANT_URL: Final[str | None] = os.getenv("QDRANT_URL")
-QDRANT_API_KEY: Final[str | None] = os.getenv("QDRANT_API_KEY")
-GROQ_API_KEY: Final[str | None] = os.getenv("GROQ_API_KEY")
-LLM_API_KEY: Final[str | None] = os.getenv("LLM_API_KEY")
-LLM_BASE_URL: Final[str] = os.getenv("LLM_BASE_URL", DEFAULT_LLM_BASE_URL)
-LLM_MODEL: Final[str | None] = os.getenv("LLM_MODEL")
-
 
 def validate_config() -> None:
     """Validate runtime configuration values and print actionable errors if invalid."""
@@ -280,6 +271,7 @@ def validate_config() -> None:
 
 # Run validation on import
 validate_config()
+
 
 __all__ = [
     "EMBEDDING_MODEL_NAME",
