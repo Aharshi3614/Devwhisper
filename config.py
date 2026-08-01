@@ -71,7 +71,7 @@ def _env_or_json(name: str, default: int) -> int:
     try:
         return int(raw)
     except (ValueError, TypeError) as exc:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+        raise ValueError(f"Config Error: {name} must be an integer, got {raw!r}") from exc
 
 
 def _env_int(name: str, default: int) -> int:
@@ -94,7 +94,7 @@ def _env_int(name: str, default: int) -> int:
     try:
         return int(value)
     except ValueError as exc:
-        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+        raise ValueError(f"Config Error: {name} must be an integer, got {value!r}") from exc
 
 
 def _env_float(name: str, default: float) -> float:
@@ -117,7 +117,7 @@ def _env_float(name: str, default: float) -> float:
     try:
         return float(value)
     except ValueError as exc:
-        raise ValueError(f"{name} must be a number, got {value!r}") from exc
+        raise ValueError(f"Config Error: {name} must be a number, got {value!r}") from exc
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -169,15 +169,15 @@ INDEX_CHUNK_OVERLAP: Final = _env_or_json("INDEX_CHUNK_OVERLAP", 3)
 # Validate indexing configuration at import time
 if INDEX_CHUNK_SIZE < 1:
     raise ValueError(
-        f"INDEX_CHUNK_SIZE must be >= 1, got {INDEX_CHUNK_SIZE}"
+        f"Config Error: INDEX_CHUNK_SIZE must be >= 1, got {INDEX_CHUNK_SIZE}"
     )
 if INDEX_CHUNK_OVERLAP < 0:
     raise ValueError(
-        f"INDEX_CHUNK_OVERLAP must be >= 0, got {INDEX_CHUNK_OVERLAP}"
+        f"Config Error: INDEX_CHUNK_OVERLAP must be >= 0, got {INDEX_CHUNK_OVERLAP}"
     )
 if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
     raise ValueError(
-        f"INDEX_CHUNK_SIZE ({INDEX_CHUNK_SIZE}) must be greater than "
+        f"Config Error: INDEX_CHUNK_SIZE ({INDEX_CHUNK_SIZE}) must be greater than "
         f"INDEX_CHUNK_OVERLAP ({INDEX_CHUNK_OVERLAP})"
     )
 
@@ -197,8 +197,7 @@ MAX_FILE_SIZE_MB: Final = _env_or_json("MAX_FILE_SIZE_MB", 1)
 """Maximum file size in megabytes for indexing eligibility."""
 
 if MAX_FILE_SIZE_MB < 1:
-    raise ValueError(f"MAX_FILE_SIZE_MB must be >= 1, got {MAX_FILE_SIZE_MB}")
-
+    raise ValueError(f"Config Error: MAX_FILE_SIZE_MB must be >= 1, got {MAX_FILE_SIZE_MB}")
 MAX_FILE_SIZE_BYTES: Final = MAX_FILE_SIZE_MB * 1024 * 1024
 """Maximum file size in bytes (derived from MAX_FILE_SIZE_MB)."""
 
@@ -250,40 +249,63 @@ LLM_BASE_URL: Final[str] = os.getenv("LLM_BASE_URL", DEFAULT_LLM_BASE_URL)
 LLM_MODEL: Final[str | None] = os.getenv("LLM_MODEL")
 """Custom LLM model name (optional override)."""
 
+# Resolved environment variable values
+QDRANT_URL: Final[str | None] = os.getenv("QDRANT_URL")
+QDRANT_API_KEY: Final[str | None] = os.getenv("QDRANT_API_KEY")
+GROQ_API_KEY: Final[str | None] = os.getenv("GROQ_API_KEY")
+LLM_API_KEY: Final[str | None] = os.getenv("LLM_API_KEY")
+LLM_BASE_URL: Final[str] = os.getenv("LLM_BASE_URL", DEFAULT_LLM_BASE_URL)
+LLM_MODEL: Final[str | None] = os.getenv("LLM_MODEL")
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Public API: explicitly list what downstream modules should import
-# ═══════════════════════════════════════════════════════════════════════════
+
+def validate_config() -> None:
+    """Validate runtime configuration values and print actionable errors if invalid."""
+    errors = []
+
+    if RETRIEVAL_TOP_K < 1:
+        errors.append(f"RETRIEVAL_TOP_K must be at least 1, got {RETRIEVAL_TOP_K}")
+
+    if HYBRID_TOP_K < 1:
+        errors.append(f"HYBRID_TOP_K must be at least 1, got {HYBRID_TOP_K}")
+
+    if CACHE_SIMILARITY_THRESHOLD < 0.0 or CACHE_SIMILARITY_THRESHOLD > 1.0:
+        errors.append(
+            f"CACHE_SIMILARITY_THRESHOLD must be between 0.0 and 1.0, got {CACHE_SIMILARITY_THRESHOLD}"
+        )
+
+    if errors:
+        error_msg = "Invalid configuration detected:\n" + "\n".join(f"- {e}" for s in errors for e in [s])
+        raise ValueError(error_msg)
+
+
+# Run validation on import
+validate_config()
+
 __all__ = [
-    # Embedding & retrieval
     "EMBEDDING_MODEL_NAME",
     "EMBEDDING_DIMENSIONS",
     "EMBEDDING_VERSION",
     "QDRANT_COLLECTION_NAME",
     "QDRANT_SIMILARITY_THRESHOLD",
     "RETRIEVAL_TOP_K",
-    # Cache
     "CACHE_SIMILARITY_THRESHOLD",
-    # Indexing
     "INDEX_CHUNK_SIZE",
     "INDEX_CHUNK_OVERLAP",
     "SUPPORTED_EXTENSIONS",
     "SAMPLE_CODEBASE_DIRECTORY",
     "MAX_FILE_SIZE_MB",
     "MAX_FILE_SIZE_BYTES",
-    # Hybrid retrieval
     "RRF_K",
     "HYBRID_TOP_K",
     "BM25_INDEX_PATH",
-    # LLM
     "DEFAULT_LLM_BASE_URL",
     "DEFAULT_GROQ_MODEL",
     "DEFAULT_OPENAI_COMPATIBLE_MODEL",
-    # Resolved env vars
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "GROQ_API_KEY",
     "LLM_API_KEY",
     "LLM_BASE_URL",
     "LLM_MODEL",
+    "validate_config",
 ]
