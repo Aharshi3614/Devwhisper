@@ -14,9 +14,8 @@ function Home() {
   const [error, setError] = useState(null)
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
-  
+  const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
   const navigate = useNavigate()
-
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
   const abortControllerRef = useRef(null)
@@ -113,6 +112,8 @@ function Home() {
     const currentQuery = textToSubmit || queryText
     if (!currentQuery.trim() || loading) return
 
+    setLastSubmittedQuery(currentQuery)
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
     }
@@ -188,8 +189,11 @@ function Home() {
     if (isListening) return
     submitQueryText(queryText)
   }
+  const handleRetry = useCallback(() => {
+    submitQueryText(lastSubmittedQuery)
+  }, [submitQueryText, lastSubmittedQuery])
 
-  // Keep a ref pointing at the latest submitQueryText so the mount-only
+   // Keep a ref pointing at the latest submitQueryText so the mount-only
   // speech-recognition effect never goes stale (and never re-runs cleanup,
   // which would abort in-flight /stream requests).
   useEffect(() => {
@@ -390,7 +394,7 @@ function Home() {
         </form>
 
         {/* Response & Error Rendering */}
-        <ResponseOutput response={response} loading={loading} error={error} />
+        <ResponseOutput response={response} loading={loading} error={error} onRetry={handleRetry} />
       </main>
 
       <footer className="landing-footer">
