@@ -41,10 +41,11 @@ def test_retrieve_formats_ranked_results(monkeypatch):
 
     context = retriever.retrieve("How is the data prepared?", top_k=2)
 
-    mock_embedder.encode.assert_called_once_with("How is the data prepared?")
+    mock_embedder.encode.assert_called_once_with("How is the data prepared")
     mock_client.query_points.assert_called_once_with(
         collection_name="devwhisper",
         query=vector,
+        query_filter=None,
         limit=2,
         score_threshold=0.0,
     )
@@ -195,3 +196,18 @@ def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     context = retriever.retrieve("test query", top_k=2)
     assert "Result 1:" in context
     assert "File: test.py" in context
+
+
+def test_preprocess_query_normalizes_whitespace_and_punctuation():
+    """Query preprocessing strips extra spaces and trailing punctuation."""
+    raw_query = "  \n  How to   index files???  \t "
+    normalized = retriever.preprocess_query(raw_query)
+    assert normalized == "How to index files"
+
+
+def test_preprocess_query_preserves_code_symbols():
+    """Code symbols like function calls and class names are preserved."""
+    raw_query = "  'query_codebase()'  "
+    normalized = retriever.preprocess_query(raw_query)
+    assert normalized == "query_codebase()"
+    

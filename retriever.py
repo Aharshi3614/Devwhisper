@@ -3,7 +3,7 @@ import os
 import pickle
 import re
 
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models as qdrant_models
 from sentence_transformers import SentenceTransformer
 
 from config import (
@@ -26,8 +26,8 @@ client = QdrantClient(
 )
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 
-#Load BM25 index for hybrid retrieval
-_bm25_data= None
+# Load BM25 index for hybrid retrieval
+_bm25_data = None
 try:
     with open(BM25_INDEX_PATH, "rb") as f:
         _bm25_data = pickle.load(f)
@@ -35,7 +35,22 @@ try:
 except FileNotFoundError:
     logger.info("BM25 index not found - keyword search disabled")
 except Exception as e:
-    logger.warning(f"Failed to loadBM25 index: {e}")
+    logger.warning(f"Failed to load BM25 index: {e}")
+
+
+def preprocess_query(query: str) -> str:
+    """Normalize user search queries by stripping whitespace and redundant punctuation."""
+    if not query:
+        return ""
+
+    # 1. Normalize whitespace (collapse redundant tabs, newlines, and multi-spaces)
+    query = re.sub(r"\s+", " ", query).strip()
+
+    # 2. Strip leading/trailing enclosing quotes or surrounding redundant punctuation
+    query = re.sub(r'^[^\w\s()_.\-]+|[^\w\s()_.\-]+$', "", query).strip()
+
+    return query
+
 
 def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
     """Retrieve project-level repository metadata."""
@@ -55,12 +70,44 @@ def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
             return metadata
     return {}
 
-def _tokenize(text:str) -> list[str]:
-    """Spilt code text into lowercased word tokens for BM25"""
+
+def _tokenize(text: str) -> list[str]:
+    """Split code text into lowercased word tokens for BM25"""
     return [t.lower() for t in re.findall(r"\b\w+\b", text)]
 
-def _keyword_search(query: str, top_k: int = HYBRID_TOP_K) -> list[dict]:
-    """BM25 keyword search. Returns chunks with 'bm25_score' and unique '_idx'."""
+
+def _matches_metadata_filter(payload: dict, metadata_filter: dict | None) -> bool:
+    """Check if a document payload satisfies all provided metadata key-value conditions."""
+    if not metadata_filter:
+        return True
+    for key, expected_value in metadata_filter.items():
+        if payload.get(key) != expected_value:
+            return False
+    return True
+
+
+def _build_qdrant_filter(metadata_filter: dict | None) -> qdrant_models.Filter | None:
+    """Convert key-value dictionary metadata filters to a Qdrant Filter object."""
+    if not metadata_filter:
+        return None
+
+    conditions = []
+    for key, value in metadata_filter.items():
+        conditions.append(
+            qdrant_models.FieldCondition(
+                key=key,
+                match=qdrant_models.MatchValue(value=value),
+            )
+        )
+    return qdrant_models.Filter(must=conditions) if conditions else None
+
+
+def _keyword_search(
+    query: str,
+    top_k: int = HYBRID_TOP_K,
+    metadata_filter: dict | None = None,
+) -> list[dict]:
+    """BM25 keyword search filtered by metadata. Returns chunks with 'bm25_score' and unique '_idx'."""
     if _bm25_data is None:
         return []
     tokenize_query = _tokenize(query)
@@ -68,15 +115,20 @@ def _keyword_search(query: str, top_k: int = HYBRID_TOP_K) -> list[dict]:
     scores = bm25.get_scores(tokenize_query)
     top_indices = sorted(
         range(len(scores)), key=lambda i: scores[i], reverse=True
-    )[:top_k]
+    )
+
     results = []
     for idx in top_indices:
         if scores[idx] > 0:
             chunk = _bm25_data["chunks"][idx].copy()
-            chunk["bm25_score"] = float(scores[idx])
-            chunk["_idx"] = idx
-            results.append(chunk)
+            if _matches_metadata_filter(chunk, metadata_filter):
+                chunk["bm25_score"] = float(scores[idx])
+                chunk["_idx"] = idx
+                results.append(chunk)
+                if len(results) >= top_k:
+                    break
     return results
+
 
 def _extract_symbols(query: str) -> list[str]:
     """Extract possible code symbol names from a natural language query."""
@@ -89,12 +141,19 @@ def _extract_symbols(query: str) -> list[str]:
         symbols.add(m.group(1))
     return list(symbols)
 
-def _exact_symbol_search(symbols: list[str], top_k: int = HYBRID_TOP_K) -> list[dict]:
-    """Find chunks containing exact symbol name matches, ranked by match count"""
+
+def _exact_symbol_search(
+    symbols: list[str],
+    top_k: int = HYBRID_TOP_K,
+    metadata_filter: dict | None = None,
+) -> list[dict]:
+    """Find chunks containing exact symbol name matches, filtered by metadata, ranked by match count."""
     if not symbols or _bm25_data is None:
         return []
     matches = []
     for idx, chunk in enumerate(_bm25_data["chunks"]):
+        if not _matches_metadata_filter(chunk, metadata_filter):
+            continue
         text_lower = chunk["text"].lower()
         count = sum(text_lower.count(sym.lower()) for sym in symbols)
         if count > 0:
@@ -105,16 +164,17 @@ def _exact_symbol_search(symbols: list[str], top_k: int = HYBRID_TOP_K) -> list[
     matches.sort(key=lambda x: -x["exact_match_count"])
     return matches[:top_k]
 
+
 def _rrf_fusion(
-        result_lists: list[list[dict]],
-        k: int = RRF_K,
-        final_top_k: int = HYBRID_TOP_K
+    result_lists: list[list[dict]],
+    k: int = RRF_K,
+    final_top_k: int = HYBRID_TOP_K,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion - fuse multiple ranked result lists by position"""
+    """Reciprocal Rank Fusion - fuse multiple ranked result lists by position."""
     scores: dict[str, float] = {}
     doc_map: dict[str, dict] = {}
     for results in result_lists:
-        for rank,doc in enumerate(results):
+        for rank, doc in enumerate(results):
             idx = str(doc.get("_idx", id(doc)))
             scores[idx] = scores.get(idx, 0) + 1.0 / (k + rank + 1)
             if idx not in doc_map:
@@ -126,6 +186,7 @@ def _rrf_fusion(
         doc["rrf_score"] = score
         final.append(doc)
     return final
+
 
 def check_embedding_version():
     """Verify that the embedding version matches the configured version."""
@@ -143,15 +204,23 @@ def retrieve(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
+    metadata_filter: dict | None = None,
 ):
-    """Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF."""
+    """Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF with preprocessing & metadata filtering."""
     check_embedding_version()
+
+    query = preprocess_query(query)
+    if not query:
+        return ("", []) if include_sources else ""
 
     vector = embedder.encode(query).tolist()
     query_limit = HYBRID_TOP_K if _bm25_data is not None else top_k
+    qdrant_filter = _build_qdrant_filter(metadata_filter)
+
     qdrant_result = client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
         query=vector,
+        query_filter=qdrant_filter,
         limit=query_limit,
         score_threshold=QDRANT_SIMILARITY_THRESHOLD,
     ).points
@@ -164,12 +233,13 @@ def retrieve(
             "text": payload.get("text", ""),
             "file": payload.get("file", "unknown"),
             "start_line": payload.get("start_line", "?"),
+            **payload,
         })
 
-    keyword_chunks = _keyword_search(query, HYBRID_TOP_K)
+    keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter)
 
     symbols = _extract_symbols(query)
-    symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K)
+    symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter)
 
     all_nonempty_chunks = [r for r in [vector_chunks, keyword_chunks, symbol_chunks] if r]
     if len(all_nonempty_chunks) > 1:
