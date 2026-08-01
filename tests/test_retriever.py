@@ -151,6 +151,7 @@ def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     assert "Result 1:" in context
     assert "File: test.py" in context
 
+
 def test_exact_symbol_search_prefers_metadata_match(monkeypatch):
     """Symbol chunks with matching symbol_name get exact metadata hits."""
     monkeypatch.setattr(
@@ -173,59 +174,20 @@ def test_exact_symbol_search_prefers_metadata_match(monkeypatch):
 
 def test_retrieve_shows_method_with_parent_class(monkeypatch):
     """Method symbols display as ClassName.method_name."""
-    vector = [0.1, 0.2, 0.3]
-
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = vector
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
+    points = [
         _point(
             {
                 "file": "model.py",
                 "start_line": 8,
                 "end_line": 10,
-                "text": " def train(self):\\n pass",
+                "text": "    def train(self):\n        pass",
                 "symbol_name": "train",
                 "symbol_type": "method",
                 "parent_class": "Model",
             }
         ),
     ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
-    context = retriever.retrieve("How do I train the model?", top_k=1)
-
-    assert "Method: Model.train" in context
-    assert "Location: Lines 8-10" in context
-
-
-def test_retrieve_shows_method_with_parent_class(monkeypatch):
-    """Method symbols display as ClassName.method_name."""
-    vector = [0.1, 0.2, 0.3]
-
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = vector
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
-        _point(
-            {
-                "file": "model.py",
-                "start_line": 8,
-                "end_line": 10,
-                "text": "    def train(self):\\n        pass",
-                "symbol_name": "train",
-                "symbol_type": "method",
-                "parent_class": "Model",
-            }
-        ),
-    ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
+    _setup_mocks(monkeypatch, points)
 
     context = retriever.retrieve("How do I train the model?", top_k=1)
 
@@ -235,25 +197,17 @@ def test_retrieve_shows_method_with_parent_class(monkeypatch):
 
 def test_retrieve_falls_back_to_regex_for_line_chunks(monkeypatch):
     """Non-symbol chunks still use the old def-line regex fallback."""
-    vector = [0.1, 0.2, 0.3]
-
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = vector
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
+    points = [
         _point(
             {
                 "file": "utils.py",
                 "start_line": 3,
-                "text": "def helper():\\n    pass",
+                "text": "def helper():\n    pass",
                 "is_symbol": False,
             }
         ),
     ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
+    _setup_mocks(monkeypatch, points)
 
     context = retriever.retrieve("What is helper?", top_k=1)
 
