@@ -131,21 +131,35 @@ def _extract_symbols(query: str) -> list[str]:
         symbols.add(m.group(1))
     return list(symbols)
 
-
 def _exact_symbol_search(
     symbols: list[str],
     top_k: int = HYBRID_TOP_K,
     metadata_filter: dict | None = None,
 ) -> list[dict]:
-    """Find chunks containing exact symbol name matches, filtered by metadata, ranked by match count."""
+    """Find chunks with exact symbol name matches.
+
+    Symbol chunks (is_symbol=True) are matched by metadata equality first.
+    Line chunks fall back to text substring counting.
+    """
     if not symbols or _bm25_data is None:
         return []
     matches = []
     for idx, chunk in enumerate(_bm25_data["chunks"]):
-        if not _matches_metadata_filter(chunk, metadata_filter):
+        if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
             continue
-        text_lower = chunk["text"].lower()
-        count = sum(text_lower.count(sym.lower()) for sym in symbols)
+        chunk_name = chunk.get("symbol_name")
+        is_symbol = chunk.get("is_symbol", False)
+
+        if is_symbol and chunk_name:
+            # Metadata-level exact match (case-insensitive)
+            count = sum(
+                1 for sym in symbols if chunk_name.lower() == sym.lower()
+            )
+        else:
+            # Fallback: text substring counting
+            text_lower = chunk["text"].lower()
+            count = sum(text_lower.count(sym.lower()) for sym in symbols)
+
         if count > 0:
             result = chunk.copy()
             result["exact_match_count"] = count
@@ -223,7 +237,12 @@ def retrieve(
             "text": payload.get("text", ""),
             "file": payload.get("file", "unknown"),
             "start_line": payload.get("start_line", "?"),
-            **payload,
+            "end_line": payload.get("end_line"),
+            "symbol_name": payload.get("symbol_name"),
+            "symbol_type": payload.get("symbol_type"),
+            "parent_class": payload.get("parent_class"),
+            "docstring": payload.get("docstring"),
+            "is_symbol": payload.get("is_symbol", False),
         })
 
     keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter)
@@ -247,21 +266,43 @@ def retrieve(
         if file and file != "unknown":
             sources.append(file)
 
-        function_name = "unknown"
-        for line in code.split("\n"):
-            if line.strip().startswith("def "):
-                function_name = (
-                    line.strip().split("(")[0].replace("def ", "")
-                )
-                break
+        # Determine display name from symbol metadata or fallback regex
+        symbol_name = result.get("symbol_name")
+        symbol_type = result.get("symbol_type")
+        parent_class = result.get("parent_class")
+        docstring = result.get("docstring")
+        end_line = result.get("end_line")
+
+        if symbol_name:
+            if parent_class:
+                display_name = f"{parent_class}.{symbol_name}"
+            else:
+                display_name = symbol_name
+            entity_label = symbol_type.capitalize() if symbol_type else "Symbol"
+        else:
+            entity_label = "Function"
+            display_name = "unknown"
+            for line in code.split("\n"):
+                if line.strip().startswith("def "):
+                    display_name = (
+                        line.strip().split("(")[0].replace("def ", "")
+                    )
+                    break
+
+        location = f"Line {start_line}"
+        if end_line and end_line != start_line:
+            location = f"Lines {start_line}-{end_line}"
+
+        doc_block = ""
+        if docstring:
+            doc_block = f"Docstring: {docstring}\n"
 
         structured_context.append(
-            f"""
-Result {index + 1}:
+            f"""Result {index + 1}:
 File: {file}
-Function: {function_name}
-Start Line: {start_line}
-Code:
+{entity_label}: {display_name}
+Location: {location}
+{doc_block}Code:
 {code}
 """
         )

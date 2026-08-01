@@ -25,6 +25,7 @@ from config import (
     BM25_INDEX_PATH
 )
 from logger import logger
+from symbol_parser import extract_symbols_from_file
 
 import pickle
 from rank_bm25 import BM25Okapi
@@ -106,8 +107,38 @@ def chunk_file(filepath, chunk_size=INDEX_CHUNK_SIZE):
                     "text": chunk,
                     "file": os.path.basename(filepath),
                     "start_line": index + 1,
+                    "is_symbol": False,
                 }
             )
+    return chunks
+
+
+def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
+    """Return all indexing chunks for *filepath*.
+
+    For Python files this includes both AST-extracted symbols and
+    traditional line-based chunks.  For other supported extensions only
+    line-based chunks are returned.
+    """
+    chunks = []
+
+    if filepath.lower().endswith(".py"):
+        symbols = extract_symbols_from_file(filepath)
+        for sym in symbols:
+            chunks.append({
+                "text": sym.source,
+                "file": os.path.basename(filepath),
+                "start_line": sym.start_line,
+                "end_line": sym.end_line,
+                "symbol_name": sym.name,
+                "symbol_type": sym.symbol_type,
+                "parent_class": sym.parent_class,
+                "docstring": sym.docstring,
+                "is_symbol": True,
+            })
+
+    line_chunks = chunk_file(filepath, chunk_size=chunk_size)
+    chunks.extend(line_chunks)
     return chunks
 
 
@@ -168,8 +199,13 @@ def index_directory(directory):
                     if before_cache_data[path]["hash"] == cache_data[path]["hash"]:
                         continue
 
-            chunks = chunk_file(path)
-            print(f" {file} → {len(chunks)} chunks")
+            chunks = get_file_chunks(path)
+            line_count = sum(1 for c in chunks if not c.get("is_symbol"))
+            sym_count = sum(1 for c in chunks if c.get("is_symbol"))
+            msg = f" {file} → {line_count} line chunks"
+            if sym_count:
+                msg += f", {sym_count} symbols"
+            print(msg)
 
             for chunk in chunks:
                 vector = embedder.encode(chunk["text"]).tolist()
@@ -194,7 +230,7 @@ def index_directory(directory):
 
         all_chunks = []
         for path in all_files:
-            chunks = chunk_file(path)
+            chunks = get_file_chunks(path)
             all_chunks.extend(chunks)
 
         if all_chunks:
