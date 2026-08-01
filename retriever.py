@@ -5,14 +5,13 @@ import re
 
 from qdrant_client import QdrantClient, models as qdrant_models
 from sentence_transformers import SentenceTransformer
+import vector_store
 
 from config import (
     EMBEDDING_MODEL_NAME,
     EMBEDDING_VERSION,
-    QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
     QDRANT_SIMILARITY_THRESHOLD,
-    QDRANT_URL,
     RETRIEVAL_TOP_K,
     BM25_INDEX_PATH,
     HYBRID_TOP_K,
@@ -20,10 +19,7 @@ from config import (
 )
 from logger import logger
 
-client = QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY,
-)
+client = vector_store.client
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 
 # Load BM25 index for hybrid retrieval
@@ -60,7 +56,6 @@ def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
         with open(metadata_path, "r", encoding="utf-8") as f:
             cache_data = json.load(f)
     except Exception:
-        # Gracefully handle corrupted metadata
         logger.warning("Corrupted repository metadata encountered.")
         return {}
 
@@ -222,8 +217,10 @@ def retrieve(
         query=vector,
         query_filter=qdrant_filter,
         limit=query_limit,
+        query_filter=qdrant_filter,
+        collection_name=QDRANT_COLLECTION_NAME,
         score_threshold=QDRANT_SIMILARITY_THRESHOLD,
-    ).points
+    )
 
     vector_chunks = []
     for idx, point in enumerate(qdrant_result):
