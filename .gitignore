@@ -10,3 +10,4 @@ __pycache__/
 .venv/
 .idea/
 sample_codebase/
+start.bat
