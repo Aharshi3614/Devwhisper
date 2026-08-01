@@ -45,6 +45,7 @@ def test_retrieve_formats_ranked_results(monkeypatch):
     mock_client.query_points.assert_called_once_with(
         collection_name="devwhisper",
         query=vector,
+        query_filter=None,
         limit=2,
         score_threshold=0.0,
     )
@@ -195,3 +196,36 @@ def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     context = retriever.retrieve("test query", top_k=2)
     assert "Result 1:" in context
     assert "File: test.py" in context
+
+
+def test_retrieve_with_metadata_filter(monkeypatch):
+    """Retrieval passes metadata filters into Qdrant query_points."""
+    monkeypatch.setattr(retriever, "_bm25_data", None)
+
+    mock_embedder = MagicMock()
+    mock_embedder.encode.return_value.tolist.return_value = [0.1, 0.2]
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+
+    mock_client = MagicMock()
+    mock_client.query_points.return_value.points = [
+        _point({"file": "model.py", "start_line": 5, "text": "def train(): pass"})
+    ]
+    monkeypatch.setattr(retriever, "client", mock_client)
+
+    metadata_filter = {"file": "model.py"}
+    context = retriever.retrieve("train model", metadata_filter=metadata_filter)
+
+    assert "File: model.py" in context
+    _, kwargs = mock_client.query_points.call_args
+    assert kwargs["query_filter"] is not None
+    assert kwargs["query_filter"].must[0].key == "file"
+    assert kwargs["query_filter"].must[0].match.value == "model.py"
+
+
+def test_matches_metadata_filter_helper():
+    """Helper evaluates payload attributes against metadata query filters."""
+    payload = {"file": "indexer.py", "language": "python"}
+    assert retriever._matches_metadata_filter(payload, {"file": "indexer.py"}) is True
+    assert retriever._matches_metadata_filter(payload, {"file": "main.py"}) is False
+    assert retriever._matches_metadata_filter(payload, None) is True
+    
