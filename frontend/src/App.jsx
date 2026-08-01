@@ -14,6 +14,7 @@ function Home() {
   const [error, setError] = useState(null)
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
+  const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
   
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
@@ -22,6 +23,8 @@ function Home() {
   const latestTranscriptRef = useRef('')
   const submitQueryTextRef = useRef(null)
   const redirectedRef = useRef(false)
+
+  const navigate = useNavigate()
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
   const [sessionId, setSessionId] = useState(() => {
@@ -32,107 +35,6 @@ function Home() {
     sessionStorage.setItem(key, newId)
     return newId
   })
-
-  // Initialize Speech Recognition API
-  useEffect(() => {
-    isMountedRef.current = true
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (SpeechRecognition) {
-      setSpeechSupported(true)
-      const rec = new SpeechRecognition()
-      rec.continuous = true
-      rec.interimResults = true
-      rec.lang = 'en-US'
-
-      rec.onstart = () => {
-        if (isMountedRef.current) {
-          setIsListening(true)
-        }
-      }
-
-      rec.onresult = (event) => {
-        let transcript = ''
-        for (let i = 0; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript
-        }
-        if (isMountedRef.current) {
-          setQueryText(transcript)
-        }
-      }
-
-      rec.onerror = (err) => {
-        console.error('Speech Recognition Error:', err)
-        if (isMountedRef.current) {
-          setIsListening(false)
-        }
-      }
-
-      rec.onend = () => {
-        if (isMountedRef.current) {
-          setIsListening(false)
-        }
-      }
-
-      recognitionRef.current = rec
-    }
-
-    return () => {
-      isMountedRef.current = false
-
-      if (recognitionRef.current) {
-        recognitionRef.current.abort()
-      }
-
-      if (mockTimerRef.current) {
-        clearTimeout(mockTimerRef.current)
-        mockTimerRef.current = null
-      }
-
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort()
-      }
-    }
-  }, [])
-
-  const handleMicClick = () => {
-    if (speechSupported && recognitionRef.current) {
-      if (isListening) {
-        recognitionRef.current.stop()
-      } else {
-        setQueryText('')
-        try {
-          recognitionRef.current.start()
-        } catch (err) {
-          console.error('Failed to start speech recognition:', err)
-        }
-      }
-    } else {
-      // Mock Fallback for browsers/environments without SpeechRecognition
-      if (isListening) {
-        setIsListening(false)
-        if (mockTimerRef.current) {
-          clearTimeout(mockTimerRef.current)
-          mockTimerRef.current = null
-        }
-      } else {
-        setIsListening(true)
-        setQueryText('Listening...')
-        if (mockTimerRef.current) {
-          clearTimeout(mockTimerRef.current)
-        }
-        mockTimerRef.current = setTimeout(() => {
-          setIsListening(prev => {
-            if (prev) {
-              setQueryText('In main.py, what functions are found?')
-              return false
-            }
-            return prev
-          })
-          mockTimerRef.current = null
-        }, 3000)
-      }
-    }
-  }
 
   const handleClearChat = async () => {
     if (loading) return
@@ -288,20 +190,18 @@ function Home() {
     if (isListening) return
     submitQueryText(queryText)
   }
+
   const handleRetry = useCallback(() => {
     submitQueryText(lastSubmittedQuery)
   }, [submitQueryText, lastSubmittedQuery])
 
-   // Keep a ref pointing at the latest submitQueryText so the mount-only
-  // speech-recognition effect never goes stale (and never re-runs cleanup,
-  // which would abort in-flight /stream requests).
+  // Keep a ref pointing at the latest submitQueryText so the mount-only
+  // speech-recognition effect never goes stale
   useEffect(() => {
     submitQueryTextRef.current = submitQueryText
   }, [submitQueryText])
 
   // After the first exchange completes, hand off to the conversation view.
-  // Home is a launchpad: you type one question, then the full conversation
-  // (and follow-ups) continues on /history?session_id=...
   useEffect(() => {
     if (!loading && response && !redirectedRef.current) {
       redirectedRef.current = true
@@ -494,8 +394,6 @@ function Home() {
 
         {/* Response Rendering */}
         <ResponseOutput response={response} loading={loading} error={error} />
-
-      
       </main>
 
       <footer className="landing-footer">
