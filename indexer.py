@@ -30,6 +30,7 @@ import sys
 import json
 from datetime import datetime, timezone
 
+from pathspec import PathSpec
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
@@ -249,6 +250,9 @@ def index_directory(directory: str) -> None:
         "message": "Starting...",
     })
 
+    # ── get .gitignore rule ──────────────────────
+    spec = get_git_ignore()
+
     try:
         # ── Load previous cache for incremental mode ──────────────────────
         before_cache_data = {}
@@ -287,6 +291,9 @@ def index_directory(directory: str) -> None:
 
         # ── Process each file ────────────────────────────────────────────
         for idx, path in enumerate(all_files, start=1):
+            if spec.match_file(path):
+                logger.info(f"{path} is ignored")
+                continue
             file = os.path.basename(path)
             progress_state.update({
                 "current": idx,
@@ -420,6 +427,24 @@ def tokenize(text: str) -> list[str]:
     import re
     return [t.lower() for t in re.findall(r"\b\w+\b", text)]
 
+def get_git_ignore() -> PathSpec:
+    """
+    Parse .gitignore and return a PathSpec matcher.
+
+    Returns:
+        PathSpec: A compiled rule set. If the file is missing or unreadable,
+                  returns an empty matcher (matches nothing).
+    """
+    try:
+        with open('.gitignore', 'r', encoding="utf-8") as f:
+            return PathSpec.from_lines('gitignore', f)
+    except FileNotFoundError:
+        logger.error("No .gitignore file found.")
+    except PermissionError:
+        logger.error("Permission denied.")
+    except Exception as e:
+        logger.error(e)
+    return PathSpec.from_lines('.gitignore', [])
 
 if __name__ == "__main__":
     index_directory(SAMPLE_CODEBASE_DIRECTORY)
