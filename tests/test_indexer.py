@@ -4,7 +4,12 @@ import os
 import tempfile
 
 from config import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB
-from indexer import chunk_file, collect_indexable_files, get_file_chunks
+from indexer import (
+    chunk_file,
+    collect_indexable_files,
+    get_file_chunks,
+    load_gitignore_rules,
+)
 
 
 def test_supported_extensions_includes_markdown():
@@ -181,3 +186,88 @@ def test_symbol_chunk_has_expected_metadata():
         assert sym["is_symbol"] is True
     finally:
         os.unlink(tmp_path)
+
+
+# --- .gitignore awareness ---
+
+
+def test_load_gitignore_rules_empty_when_no_gitignore():
+    """A tree without any .gitignore produces no rules."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "main.py"), "w") as f:
+            f.write("x = 1\n")
+        assert load_gitignore_rules(tmpdir) == []
+
+
+def test_collect_respects_gitignore():
+    """Files/directories listed in .gitignore are excluded from indexing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ignored_dir = os.path.join(tmpdir, "ignored")
+        os.makedirs(ignored_dir)
+        with open(os.path.join(tmpdir, "keep.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(ignored_dir, "secret.py"), "w") as f:
+            f.write("secret = 1\n")
+        with open(os.path.join(tmpdir, ".gitignore"), "w") as f:
+            f.write("ignored/\nsecret.py\n")
+
+        rules = load_gitignore_rules(tmpdir)
+        files, skipped = collect_indexable_files(tmpdir, gitignore_rules=rules)
+
+        assert os.path.join(tmpdir, "keep.py") in files
+        assert os.path.join(ignored_dir, "secret.py") not in files
+        assert any(s["reason"] == "gitignored" for s in skipped)
+
+
+def test_collect_respects_nested_gitignore():
+    """A nested .gitignore only affects files under its own directory."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        subdir = os.path.join(tmpdir, "sub")
+        os.makedirs(subdir)
+        with open(os.path.join(tmpdir, "main.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(subdir, "keep.py"), "w") as f:
+            f.write("y = 2\n")
+        with open(os.path.join(subdir, "drop.py"), "w") as f:
+            f.write("z = 3\n")
+        with open(os.path.join(subdir, ".gitignore"), "w") as f:
+            f.write("drop.py\n")
+
+        rules = load_gitignore_rules(tmpdir)
+        files, _ = collect_indexable_files(tmpdir, gitignore_rules=rules)
+
+        assert os.path.join(tmpdir, "main.py") in files
+        assert os.path.join(subdir, "keep.py") in files
+        assert os.path.join(subdir, "drop.py") not in files
+
+
+def test_gitignore_negation_honored():
+    """`!pattern` inside a .gitignore re-includes a previously ignored file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "keep.py"), "w") as f:
+            f.write("keep = 1\n")
+        with open(os.path.join(tmpdir, "other.py"), "w") as f:
+            f.write("other = 1\n")
+        with open(os.path.join(tmpdir, ".gitignore"), "w") as f:
+            f.write("*.py\n!keep.py\n")
+
+        rules = load_gitignore_rules(tmpdir)
+        files, _ = collect_indexable_files(tmpdir, gitignore_rules=rules)
+
+        assert os.path.join(tmpdir, "keep.py") in files
+        assert os.path.join(tmpdir, "other.py") not in files
+
+
+def test_collect_unaffected_without_gitignore_rules():
+    """Passing no rules leaves the existing collection behavior unchanged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.makedirs(os.path.join(tmpdir, "ignored_dir"), exist_ok=True)
+        with open(os.path.join(tmpdir, "good.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(tmpdir, "ignored_dir", "inner.py"), "w") as f:
+            f.write("y = 1\n")
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=1000)
+
+        assert len(files) == 2
+        assert skipped == []

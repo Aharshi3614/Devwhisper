@@ -117,6 +117,11 @@ Developer hears the response
    python indexer.py
    ```
 
+> **💡 .gitignore awareness:** DevWhisper automatically skips files and
+> directories listed in the codebase's `.gitignore` when indexing. Nested
+> `.gitignore` files are honored too, so build artifacts, virtual
+> environments, and other ignored files stay out of the search index.
+
 7. **Start the server**
    ```bash
    uvicorn main:app --reload --port 8000
