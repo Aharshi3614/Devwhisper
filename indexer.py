@@ -5,8 +5,12 @@ files into Qdrant (vector DB) and a local BM25 keyword index. It supports
 both full and incremental re-indexing, file-size limits, and progress tracking
 for real-time monitoring via SSE.
 
+Files listed in the codebase's `.gitignore` files (root or nested) are
+automatically skipped during collection.
+
 Key components:
   - collect_indexable_files(): Walks the codebase directory and filters eligible files.
+  - load_gitignore_rules(): Collects root + nested .gitignore rules into matchers.
   - create_collection(): (Re)creates the Qdrant vector collection.
   - chunk_file(): Splits a file into overlapping line-based chunks.
   - get_file_chunks(): Returns symbol chunks + line chunks for Python files.
@@ -30,6 +34,7 @@ import sys
 import json
 from datetime import datetime, timezone
 
+from pathspec import PathSpec
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
@@ -83,16 +88,26 @@ progress_state = {
 }
 
 
-def collect_indexable_files(directory: str, max_bytes: int | None = None) -> tuple[list[str], list[dict]]:
+def collect_indexable_files(
+    directory: str,
+    max_bytes: int | None = None,
+    gitignore_rules: list[tuple[str, PathSpec]] | None = None,
+) -> tuple[list[str], list[dict]]:
     """
     Recursively collect files eligible for indexing from a directory.
 
     Filters by SUPPORTED_EXTENSIONS and MAX_FILE_SIZE_BYTES. Files that are
     unreadable or exceed the size limit are recorded in the skipped list.
+    When *gitignore_rules* is provided (see load_gitignore_rules()), files
+    and directories matched by any applicable .gitignore rule are excluded
+    and recorded as skipped with reason "gitignored".
 
     Args:
         directory: Root directory to scan.
         max_bytes: Optional override for the max file size limit (bytes).
+        gitignore_rules: Optional list of (base_dir, PathSpec) pairs. Paths
+            are matched relative to each rule's own base_dir, mirroring git's
+            handling of nested .gitignore files.
 
     Returns:
         Tuple of (files_to_index, skipped_files).
@@ -100,13 +115,30 @@ def collect_indexable_files(directory: str, max_bytes: int | None = None) -> tup
     """
     limit = MAX_FILE_SIZE_BYTES if max_bytes is None else max_bytes
     files_to_index, skipped = [], []
+    rules = gitignore_rules or []
 
-    for root, _, files in os.walk(directory):
+    for root, dirnames, files in os.walk(directory):
+        # Prune ignored directories so we don't descend into them.
+        # A trailing separator makes directory-only patterns (e.g. "build/")
+        # match the directory itself.
+        dirnames[:] = [
+            d for d in dirnames
+            if not _is_gitignored(os.path.join(root, d) + os.sep, rules)
+        ]
+
         for file in files:
+            if file == ".gitignore":
+                continue  # .gitignore files are never indexed
+
             if os.path.splitext(file)[1].lower() not in SUPPORTED_EXTENSIONS:
                 continue
 
             path = os.path.join(root, file)
+            if _is_gitignored(path, rules):
+                logger.info("Skipping gitignored file %s", path)
+                skipped.append({"path": path, "size_bytes": None, "reason": "gitignored"})
+                continue
+
             try:
                 size = os.path.getsize(path)
             except OSError as exc:
@@ -224,7 +256,8 @@ def index_directory(directory: str) -> None:
 
     Steps:
       1. Load previous cache (if incremental).
-      2. Collect eligible files (skip oversized / unreadable).
+      2. Load .gitignore rules and collect eligible files (skip gitignored,
+         oversized, and unreadable files).
       3. (Re)create Qdrant collection (unless incremental and exists).
       4. For each file: chunk → embed → build PointStruct → batch upsert.
       5. Build BM25 index from all chunks.
@@ -248,6 +281,9 @@ def index_directory(directory: str) -> None:
         "status": "running",
         "message": "Starting...",
     })
+
+    # ── Collect .gitignore rules (root + nested) ────────────────────────
+    gitignore_rules = load_gitignore_rules(directory)
 
     try:
         # ── Load previous cache for incremental mode ──────────────────────
@@ -277,7 +313,9 @@ def index_directory(directory: str) -> None:
         cache_data = {}
 
         # ── Collect eligible files ────────────────────────────────────────
-        all_files, skipped_files = collect_indexable_files(directory)
+        all_files, skipped_files = collect_indexable_files(
+            directory, gitignore_rules=gitignore_rules
+        )
         progress_state["skipped"] = skipped_files
         progress_state["skipped_count"] = len(skipped_files)
         total_files = len(all_files)
@@ -419,6 +457,56 @@ def tokenize(text: str) -> list[str]:
     """
     import re
     return [t.lower() for t in re.findall(r"\b\w+\b", text)]
+
+def load_gitignore_rules(root: str) -> list[tuple[str, PathSpec]]:
+    """
+    Collect .gitignore rules from *root* and all of its subdirectories.
+
+    Walks the tree once and returns one (base_dir, PathSpec) pair per
+    .gitignore file found, with each file's patterns interpreted relative to
+    its own directory — mirroring git's handling of nested .gitignore files.
+    A file is considered ignored when any applicable spec matches it.
+
+    Args:
+        root: Directory to scan for .gitignore files.
+
+    Returns:
+        List of (base_dir, PathSpec) tuples. Empty if no .gitignore exists.
+    """
+    rules = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        if ".gitignore" not in filenames:
+            continue
+        gitignore_path = os.path.join(dirpath, ".gitignore")
+        try:
+            with open(gitignore_path, "r", encoding="utf-8", errors="ignore") as f:
+                spec = PathSpec.from_lines("gitignore", f)
+        except OSError as exc:
+            logger.warning("Could not read %s: %s", gitignore_path, exc)
+            continue
+        rules.append((dirpath, spec))
+    return rules
+
+
+def _is_gitignored(path: str, rules: list[tuple[str, PathSpec]]) -> bool:
+    """
+    Return True if *path* is matched by any applicable .gitignore rule.
+
+    Each rule is a (base_dir, PathSpec) pair; *path* is matched relative to
+    that rule's base_dir, so nested .gitignore files only affect files below
+    their own directory. Negation patterns (lines starting with ``!``) inside
+    a single .gitignore file are honored; cross-file negation is best-effort.
+    """
+    for base_dir, spec in rules:
+        try:
+            rel_path = os.path.relpath(path, base_dir).replace("\\", "/")
+        except ValueError:
+            continue  # different drive (Windows); rule cannot apply
+        if rel_path == ".." or rel_path.startswith("../"):
+            continue  # path lies outside this .gitignore's directory
+        if spec.match_file(rel_path):
+            return True
+    return False
 
 
 if __name__ == "__main__":
