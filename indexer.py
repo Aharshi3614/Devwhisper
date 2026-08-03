@@ -353,11 +353,21 @@ def index_directory(directory: str) -> None:  # noqa: C901
             # Skip unchanged files in incremental mode
             if "--incremental" in sys.argv and path in before_cache_data:
                 if is_cache_unchanged(before_cache_data, cache_data, path):
+                    cache_data[path]["symbols"] = before_cache_data[path].get("symbols", [])
                     if idx % INDEX_FILE_BATCH_SIZE == 0 or idx == total_files:
                         upsert_pending(idx)
                     continue
 
             chunks = get_file_chunks(path)
+            file_symbols = []
+            for chunk in chunks:
+                if chunk.get("is_symbol"):
+                    file_symbols.append({
+                        "name": chunk["symbol_name"],
+                        "type": chunk["symbol_type"]
+                    })
+            cache_data[path]["symbols"] = file_symbols
+
             line_count = sum(1 for c in chunks if not c.get("is_symbol"))
             sym_count = sum(1 for c in chunks if c.get("is_symbol"))
             msg = f" {file} → {line_count} line chunks"

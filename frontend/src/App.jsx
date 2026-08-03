@@ -16,6 +16,7 @@ function Home() {
   const [speechSupported, setSpeechSupported] = useState(false)
   const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
   const [reindexRecommended, setReindexRecommended] = useState(false)
+  const [suggestions, setSuggestions] = useState([])
 
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
@@ -56,6 +57,11 @@ function Home() {
       })
       if (!res.ok) {
         console.error('Failed to reset conversation memory.')
+      }
+      const suggestionsRes = await fetch('/index/suggestions')
+      if (suggestionsRes.ok) {
+        const data = await suggestionsRes.json()
+        setSuggestions(data.suggestions || [])
       }
     } catch (err) {
       console.error('Error resetting conversation memory:', err)
@@ -214,6 +220,28 @@ function Home() {
       const timer = setInterval(checkReindex, 30000)
       return () => clearInterval(timer)
     }, [])
+
+  useEffect(() => {
+    let active = true
+    const fetchSuggestions = async () => {
+      try {
+        const res = await fetch('/index/suggestions')
+        if (res.ok && active) {
+          const data = await res.json()
+          setSuggestions(data.suggestions || [])
+        }
+      } catch (err) {
+        console.error('Failed to load query suggestions:', err)
+      }
+    }
+
+    fetchSuggestions()
+    const timer = setInterval(fetchSuggestions, 15000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [])
 
   // Keep a ref pointing at the latest submitQueryText so the mount-only
   // speech-recognition effect never goes stale
@@ -417,6 +445,28 @@ function Home() {
             </div>
           </div>
         </form>
+
+        {/* Contextual suggestions */}
+        {!response && !loading && !error && suggestions.length > 0 && (
+          <div className="suggestions-container">
+            <h3 className="suggestions-title">💡 Try asking:</h3>
+            <div className="suggestions-grid">
+              {suggestions.map((suggestion, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() => {
+                    setQueryText(suggestion)
+                    submitQueryText(suggestion)
+                  }}
+                  className="suggestion-tag"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Response Rendering */}
         <ResponseOutput response={response} loading={loading} error={error} />

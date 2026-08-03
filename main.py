@@ -718,3 +718,78 @@ def index_change_recommendation():
         else "Index is up to date.",
     }
 
+
+@app.get("/index/suggestions")
+def get_index_suggestions():
+    """
+    Generate contextual query suggestions based on the indexed codebase.
+    """
+    suggestions = []
+
+    cache_path = ".index_cache.json"
+    cache_data = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+        except Exception:
+            pass
+
+    files_info = []
+    for filepath, info in cache_data.items():
+        if filepath.startswith("_"):
+            continue
+        filename = os.path.basename(filepath)
+        symbols = info.get("symbols", []) if isinstance(info, dict) else []
+        files_info.append({
+            "filename": filename,
+            "symbols": symbols
+        })
+
+    import random
+
+    # Generate suggestions from markdown files
+    md_files = [f["filename"] for f in files_info if f["filename"].lower().endswith(".md")]
+    for f in md_files:
+        suggestions.append(f"What is the purpose of {f}?")
+        suggestions.append(f"What contents or features are described in {f}?")
+
+    # Generate suggestions from python files and their symbols
+    py_files = [f for f in files_info if f["filename"].lower().endswith(".py")]
+    for f in py_files:
+        filename = f["filename"]
+        symbols = f["symbols"]
+
+        suggestions.append(f"What is the main role of {filename} in this codebase?")
+        suggestions.append(f"In {filename}, what functions are found?")
+
+        for sym in symbols:
+            name = sym.get("name")
+            sym_type = sym.get("type", "function")
+            if sym_type == "class":
+                suggestions.append(f"How is the class {name} implemented in {filename}?")
+                suggestions.append(f"What is the purpose of the class {name}?")
+            else:
+                suggestions.append(f"In {filename}, what does the function {name} do?")
+                suggestions.append(f"Explain the purpose of the function {name}.")
+
+    fallback_suggestions = [
+        "What is this project about?",
+        "What are the main entry points of this codebase?",
+        "Explain the overall architecture of the project.",
+        "What libraries or dependencies does this project use?",
+        "How do I set up and run this codebase?"
+    ]
+
+    if len(suggestions) < 4:
+        suggestions.extend(fallback_suggestions)
+
+    # De-duplicate
+    unique_suggestions = list(dict.fromkeys(suggestions))
+
+    # Shuffle and pick top 4
+    random.shuffle(unique_suggestions)
+    selected_suggestions = unique_suggestions[:4]
+
+    return {"suggestions": selected_suggestions}
+
