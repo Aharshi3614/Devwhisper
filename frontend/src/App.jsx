@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
 import MicButton from './components/MicButton.jsx'
@@ -14,6 +14,8 @@ function Home() {
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
   const [countdown, setCountdown] = useState(null)
+  const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
+  const [reindexRecommended, setReindexRecommended] = useState(false)
 
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
@@ -32,6 +34,12 @@ function Home() {
     "What functions are defined in main.py?"
   ]
 
+  const submitQueryTextRef = useRef(null)
+  const redirectedRef = useRef(false)
+
+  const navigate = useNavigate()
+
+  // Retrieve or generate a stable session ID so that query history shows up in the history panel
   const [sessionId, setSessionId] = useState(() => {
     const key = 'devwhisper_session_id'
     const existing = sessionStorage.getItem(key)
@@ -78,6 +86,8 @@ function Home() {
     const newId = 'web-' + Math.random().toString(36).substring(2, 9)
     sessionStorage.setItem('devwhisper_session_id', newId)
     setSessionId(newId)
+    // Allow the fresh session to get its own hand-off to /history.
+    redirectedRef.current = false
 
     try {
       const res = await fetch('/reset', {
@@ -142,6 +152,8 @@ function Home() {
   const submitQueryText = useCallback(async (textToSubmit) => {
     const currentQuery = textToSubmit || queryText
     if (!currentQuery.trim() || loading) return
+
+    setLastSubmittedQuery(currentQuery)
 
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -220,6 +232,43 @@ function Home() {
     submitQueryText(queryText)
   }
 
+  const handleRetry = useCallback(() => {
+    submitQueryText(lastSubmittedQuery)
+  }, [submitQueryText, lastSubmittedQuery])
+
+  useEffect(() => {
+    const checkReindex = async () => {
+      try {
+        const res = await fetch('/index/change', { method: 'GET' })
+        if (res.ok) {
+          const data = await res.json()
+          setReindexRecommended(data.reindex_recommended)
+        }
+      }
+      catch (err) {
+          console.error('Error checking reindex recommendation:', err)
+      }
+    }
+
+      checkReindex()
+      const timer = setInterval(checkReindex, 30000)
+      return () => clearInterval(timer)
+    }, [])
+
+  // Keep a ref pointing at the latest submitQueryText so the mount-only
+  // speech-recognition effect never goes stale
+  useEffect(() => {
+    submitQueryTextRef.current = submitQueryText
+  }, [submitQueryText])
+
+  // After the first exchange completes, hand off to the conversation view.
+  useEffect(() => {
+    if (!loading && response && !redirectedRef.current) {
+      redirectedRef.current = true
+      navigate(`/history?session_id=${encodeURIComponent(sessionId)}`)
+    }
+  }, [loading, response, sessionId, navigate])
+
   // Initialize Speech Recognition API with complete E2E Voice Flow
   useEffect(() => {
     isMountedRef.current = true
@@ -272,7 +321,7 @@ function Home() {
           setIsListening(false)
           const finalQuery = latestTranscriptRef.current.trim()
           if (finalQuery) {
-            submitQueryText(finalQuery)
+            submitQueryTextRef.current(finalQuery)
           }
         }
       }
@@ -355,13 +404,19 @@ function Home() {
       }
     }
   }
-
-  return (
+ 
+  return (    
     <div className="landing-container">
       <header className="hero-header">
         <h1 className="logo-text">DevWhisper</h1>
         <p className="subtitle-text">Voice-native developer experience agent</p>
       </header>
+
+      {reindexRecommended && (
+        <div className="reindex-banner">
+          ⚠️ Codebase changed. Re-indexing is recommended.
+        </div>
+      )}
 
       <main className="query-card">
         <form onSubmit={handleSubmit} className="query-form">

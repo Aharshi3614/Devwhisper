@@ -19,11 +19,13 @@ def reset_progress():
     progress_state.update({
         "running": False, "current": 0, "total": 0,
         "percent": 0, "current_file": "", "status": "idle", "message": "",
+        "skipped": [], "skipped_count": 0,
     })
     yield
     progress_state.update({
         "running": False, "current": 0, "total": 0,
         "percent": 0, "current_file": "", "status": "idle", "message": "",
+        "skipped": [], "skipped_count": 0,
     })
 
 
@@ -113,7 +115,7 @@ def test_progress_shows_error_status(client):
 # --- progress_state unit tests ---
 
 def test_progress_state_has_required_keys():
-    required = {"running", "current", "total", "percent", "current_file", "status", "message"}
+    required = {"running", "current", "total", "percent", "current_file", "status", "message", "skipped", "skipped_count"}
     assert required.issubset(set(progress_state.keys()))
 
 

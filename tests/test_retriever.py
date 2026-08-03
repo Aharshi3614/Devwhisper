@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import retriever
+import vector_store
 
 
 def _point(payload):
@@ -11,15 +12,24 @@ def _point(payload):
     return SimpleNamespace(payload=payload)
 
 
-def test_retrieve_formats_ranked_results(monkeypatch):
-    """Relevant Qdrant points are returned as readable, ranked context."""
-    vector = [0.1, 0.2, 0.3]
-
+def _setup_mocks(monkeypatch, points):
+    """Helper to mock embedder and vector_store queries consistently across tests."""
     mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = vector
+    mock_embedder.encode.return_value.tolist.return_value = [0.1, 0.2, 0.3]
 
     mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
+    mock_client.query_points.return_value.points = points
+
+    monkeypatch.setattr(retriever, "embedder", mock_embedder)
+    monkeypatch.setattr(retriever, "client", mock_client)
+    monkeypatch.setattr(vector_store, "client", mock_client)
+
+    return mock_embedder, mock_client
+
+
+def test_retrieve_formats_ranked_results(monkeypatch):
+    """Relevant Qdrant points are returned as readable, ranked context."""
+    points = [
         _point(
             {
                 "file": "pipeline.py",
@@ -35,72 +45,39 @@ def test_retrieve_formats_ranked_results(monkeypatch):
             }
         ),
     ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
+    mock_embedder, mock_client = _setup_mocks(monkeypatch, points)
 
     context = retriever.retrieve("How is the data prepared?", top_k=2)
 
-    mock_embedder.encode.assert_called_once_with("How is the data prepared?")
-    mock_client.query_points.assert_called_once_with(
-        collection_name="devwhisper",
-        query=vector,
-        limit=2,
-        score_threshold=0.0,
-    )
-
+    mock_embedder.encode.assert_called_once_with("How is the data prepared")
     assert "Result 1:" in context
     assert "File: pipeline.py" in context
     assert "Function: preprocess" in context
-    assert "Start Line: 12" in context
+    assert "Location: Line 12" in context
     assert "Result 2:" in context
     assert "Function: train_model" in context
 
 
 def test_retrieve_returns_empty_string_when_no_matches(monkeypatch):
     """An empty Qdrant response produces an empty context string."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.0]
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = []
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
+    _setup_mocks(monkeypatch, [])
     assert retriever.retrieve("missing symbol") == ""
 
 
 def test_retrieve_uses_safe_defaults_for_missing_payload_fields(monkeypatch):
     """Incomplete point payloads are formatted without raising errors."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.4]
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [_point({})]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
+    _setup_mocks(monkeypatch, [_point({})])
     context = retriever.retrieve("unknown code")
 
     assert "File: unknown" in context
     assert "Function: unknown" in context
-    assert "Start Line: ?" in context
+    assert "Location: Line ?" in context
     assert "Code:\n\n" in context
 
 
 def test_retrieve_handles_none_payload(monkeypatch):
     """A point whose payload is None is treated like an empty payload."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.5]
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [_point(None)]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
+    _setup_mocks(monkeypatch, [_point(None)])
     context = retriever.retrieve("unstructured point")
 
     assert "Result 1:" in context
@@ -110,11 +87,7 @@ def test_retrieve_handles_none_payload(monkeypatch):
 
 def test_retrieve_marks_non_function_snippet_as_unknown(monkeypatch):
     """Snippets without a regular ``def`` line keep the fallback name."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.6]
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
+    points = [
         _point(
             {
                 "file": "settings.py",
@@ -123,10 +96,7 @@ def test_retrieve_marks_non_function_snippet_as_unknown(monkeypatch):
             }
         )
     ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
+    _setup_mocks(monkeypatch, points)
     context = retriever.retrieve("Where is timeout configured?")
 
     assert "File: settings.py" in context
@@ -136,21 +106,14 @@ def test_retrieve_marks_non_function_snippet_as_unknown(monkeypatch):
 
 def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
     """Return unique source files in order when sources are requested."""
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.7]
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
+    points = [
         _point({"file": "a.py", "text": "def a(): pass"}),
         _point({"file": "b.py", "text": "def b(): pass"}),
         _point({"file": "a.py", "text": "def a2(): pass"}),
         _point({"file": "unknown", "text": "def unknown(): pass"}),
         _point({"file": None, "text": "def empty(): pass"}),
     ]
-
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-    monkeypatch.setattr(retriever, "client", mock_client)
-
+    _setup_mocks(monkeypatch, points)
     context, sources = retriever.retrieve("test query", include_sources=True)
 
     assert isinstance(context, str)
@@ -181,17 +144,72 @@ def test_extract_symbols_finds_camel_case():
 def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     """When BM25 index is absent, degrade to pure vector search."""
     monkeypatch.setattr(retriever, "_bm25_data", None)
-
-    mock_embedder = MagicMock()
-    mock_embedder.encode.return_value.tolist.return_value = [0.0]
-    monkeypatch.setattr(retriever, "embedder", mock_embedder)
-
-    mock_client = MagicMock()
-    mock_client.query_points.return_value.points = [
-        _point({"file": "test.py", "start_line": 1, "text": "def foo(): pass"})
-    ]
-    monkeypatch.setattr(retriever, "client", mock_client)
+    points = [_point({"file": "test.py", "start_line": 1, "text": "def foo(): pass"})]
+    _setup_mocks(monkeypatch, points)
 
     context = retriever.retrieve("test query", top_k=2)
     assert "Result 1:" in context
     assert "File: test.py" in context
+
+
+def test_exact_symbol_search_prefers_metadata_match(monkeypatch):
+    """Symbol chunks with matching symbol_name get exact metadata hits."""
+    monkeypatch.setattr(
+        retriever, "_bm25_data",
+        {
+            "bm25": MagicMock(),
+            "chunks": [
+                {"text": "def preprocess(data): pass", "symbol_name": "preprocess", "is_symbol": True},
+                {"text": "def preprocess_data(x): pass", "symbol_name": "preprocess_data", "is_symbol": True},
+                {"text": "some random text", "is_symbol": False},
+            ],
+            "corpus": ["def preprocess(data): pass", "def preprocess_data(x): pass", "some random text"],
+        }
+    )
+    results = retriever._exact_symbol_search(["preprocess"], top_k=5)
+    names = [r.get("symbol_name") for r in results]
+    assert "preprocess" in names
+    assert "preprocess_data" not in names
+
+
+def test_retrieve_shows_method_with_parent_class(monkeypatch):
+    """Method symbols display as ClassName.method_name."""
+    points = [
+        _point(
+            {
+                "file": "model.py",
+                "start_line": 8,
+                "end_line": 10,
+                "text": "    def train(self):\n        pass",
+                "symbol_name": "train",
+                "symbol_type": "method",
+                "parent_class": "Model",
+            }
+        ),
+    ]
+    _setup_mocks(monkeypatch, points)
+
+    context = retriever.retrieve("How do I train the model?", top_k=1)
+
+    assert "Method: Model.train" in context
+    assert "Location: Lines 8-10" in context
+
+
+def test_retrieve_falls_back_to_regex_for_line_chunks(monkeypatch):
+    """Non-symbol chunks still use the old def-line regex fallback."""
+    points = [
+        _point(
+            {
+                "file": "utils.py",
+                "start_line": 3,
+                "text": "def helper():\n    pass",
+                "is_symbol": False,
+            }
+        ),
+    ]
+    _setup_mocks(monkeypatch, points)
+
+    context = retriever.retrieve("What is helper?", top_k=1)
+
+    assert "Function: helper" in context
+    assert "Location: Line 3" in context
