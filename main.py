@@ -27,7 +27,7 @@ Security:
     closed (401) if ADMIN_SECRET is not configured.
 """
 
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Request, Header, HTTPException, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata
@@ -43,6 +43,8 @@ import json
 import os
 import time
 import asyncio
+import shutil
+import zipfile
 import threading
 from datetime import datetime, timezone
 
@@ -494,6 +496,85 @@ def start_indexing():
         return error_response(409, "Indexing is already in progress.")
     threading.Thread(target=index_directory, args=(SAMPLE_CODEBASE_DIRECTORY,), daemon=True).start()
     return {"status": "started", "message": "Indexing started. Poll /index/progress for updates."}
+
+
+@app.post("/index/upload")
+async def upload_codebase(file: UploadFile = File(...)):
+    """
+    Accept a ZIP archive of a local codebase, extract it, and automatically index it.
+    """
+    if progress_state.get("running"):
+        return error_response(409, "Indexing is already in progress.")
+
+    if not file.filename.endswith(".zip"):
+        return error_response(400, "Only ZIP archives are supported.")
+
+    # Temporarily save the zip file on disk
+    temp_zip_path = "temp_upload.zip"
+    try:
+        with open(temp_zip_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        logger.error("Failed to write uploaded file to disk: %s", e)
+        return error_response(500, f"Failed to save uploaded file: {e}")
+
+    # Validate ZIP file structure
+    if not zipfile.is_zipfile(temp_zip_path):
+        if os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
+        return error_response(400, "Invalid ZIP archive.")
+
+    try:
+        # Check Zip Slip path traversal
+        with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+            for member in zip_ref.namelist():
+                # Avoid relative paths pointing outside target
+                norm_path = os.path.normpath(member)
+                if norm_path.startswith("..") or os.path.isabs(norm_path):
+                    if os.path.exists(temp_zip_path):
+                        os.remove(temp_zip_path)
+                    return error_response(400, f"Path traversal detected in ZIP: {member}")
+
+            # Recreate target directory cleanly to ensure isolation
+            if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
+                shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
+            os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
+
+            # Extract the ZIP
+            zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
+    except Exception as e:
+        logger.error("Error during ZIP validation/extraction: %s", e)
+        if os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
+        return error_response(500, f"Failed to process ZIP archive: {e}")
+
+    # Clean up temp file
+    if os.path.exists(temp_zip_path):
+        os.remove(temp_zip_path)
+
+    # Validate that extracted directory has supported files (.py, .md)
+    has_supported_file = False
+    for root, dirs, files in os.walk(SAMPLE_CODEBASE_DIRECTORY):
+        for f in files:
+            if f.endswith((".py", ".md")):
+                has_supported_file = True
+                break
+        if has_supported_file:
+            break
+
+    if not has_supported_file:
+        # Clean up the directory since it's invalid/unsupported
+        if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
+            shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
+        return error_response(400, "No supported files (.py, .md) found in the uploaded ZIP archive.")
+
+    # Trigger background indexing
+    threading.Thread(target=index_directory, args=(SAMPLE_CODEBASE_DIRECTORY,), daemon=True).start()
+
+    return {
+        "status": "started",
+        "message": "ZIP file uploaded and extracted successfully. Indexing started in the background."
+    }
 
 
 @app.get("/index/progress")
