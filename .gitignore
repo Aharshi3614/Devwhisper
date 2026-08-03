@@ -12,3 +12,5 @@ __pycache__/
 sample_codebase/
 start.bat
 .index_cache.json
+temp_upload*.zip
+
