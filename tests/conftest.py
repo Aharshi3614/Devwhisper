@@ -1,5 +1,8 @@
 import sys
+import os
 from unittest.mock import MagicMock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock SentenceTransformer to prevent downloading/loading the model during tests
 mock_sentence_transformers = MagicMock()
