@@ -15,7 +15,8 @@ function Home() {
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
   const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
-  
+  const [reindexRecommended, setReindexRecommended] = useState(false)
+
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
   const abortControllerRef = useRef(null)
@@ -195,6 +196,25 @@ function Home() {
     submitQueryText(lastSubmittedQuery)
   }, [submitQueryText, lastSubmittedQuery])
 
+  useEffect(() => {
+    const checkReindex = async () => {
+      try {
+        const res = await fetch('/index/change', { method: 'GET' })
+        if (res.ok) {
+          const data = await res.json()
+          setReindexRecommended(data.reindex_recommended)
+        }
+      }
+      catch (err) {
+          console.error('Error checking reindex recommendation:', err)
+      }
+    }
+
+      checkReindex()
+      const timer = setInterval(checkReindex, 30000)
+      return () => clearInterval(timer)
+    }, [])
+
   // Keep a ref pointing at the latest submitQueryText so the mount-only
   // speech-recognition effect never goes stale
   useEffect(() => {
@@ -327,13 +347,19 @@ function Home() {
       }
     }
   }
-
-  return (
+ 
+  return (    
     <div className="landing-container">
       <header className="hero-header">
         <h1 className="logo-text">DevWhisper</h1>
         <p className="subtitle-text">Voice-native developer experience agent</p>
       </header>
+
+      {reindexRecommended && (
+        <div className="reindex-banner">
+          ⚠️ Codebase changed. Re-indexing is recommended.
+        </div>
+      )}
 
       <main className="query-card">
         <form onSubmit={handleSubmit} className="query-form">

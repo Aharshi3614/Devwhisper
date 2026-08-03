@@ -36,7 +36,8 @@ from cache import get as cache_get, put as cache_put
 from handlers import route_command
 from logger import logger
 from errors import error_response
-from indexer import index_directory, progress_state
+from indexer import index_directory, progress_state, get_before_cache_data, collect_indexable_files, \
+    load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
 from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
 import json
@@ -86,9 +87,24 @@ conversation_sessions = session_manager.sessions
 session_lock = session_manager.lock
 
 
+# Detected at startup: whether the codebase changed since the last index run.
+# Read by the /index/change endpoint so the frontend can show a re-index hint.
+reindex_recommended = False
+
+# TTL cache for /index/change: re-scan at most once every N seconds so the
+# endpoint stays cheap to poll while still noticing changes mid-run.
+REINDEX_CHECK_INTERVAL = 60  # seconds
+_reindex_last_checked_at = 0.0
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Warm up the sentence-transformers embedder to avoid cold-start latency."""
+    """Warm up the embedder and check whether re-indexing is recommended."""
+    global reindex_recommended, _reindex_last_checked_at
+    reindex_recommended = is_repository_change()
+    _reindex_last_checked_at = time.time()  # start the TTL clock at startup
+    if reindex_recommended:
+        logger.warning("Codebase changed. Re-indexing is recommended.")
     embedder.encode("warmup query")
     logger.info("Embedder warmed up and ready!")
 
@@ -648,3 +664,57 @@ def get_history(session_id: str | None = None):
 
         all_session_ids = list(conversation_sessions.keys())
     return {"session_ids": all_session_ids, "sessions": sessions_info}
+
+def is_repository_change() -> bool:
+    """
+    Return True if the codebase has changed since the last indexing run.
+
+    Collects the current indexable files (respecting .gitignore) and compares
+    each file's mtime and hash against the cached values in .index_cache.json.
+    Returns True as soon as any file differs — meaning re-indexing is
+    recommended.
+
+    Returns:
+        True if the repository changed since the last index, else False.
+    """
+    cache_data = {}
+    gitignore_rules = load_gitignore_rules(SAMPLE_CODEBASE_DIRECTORY)
+    all_files, _skipped = collect_indexable_files(
+        SAMPLE_CODEBASE_DIRECTORY, gitignore_rules=gitignore_rules
+    )
+    before_cache_data = get_before_cache_data()
+    for path in all_files:
+        cache_data[path] = {
+            "mtime": os.path.getmtime(path),
+            "hash": get_file_hash(path),
+        }
+        if path not in before_cache_data:
+            return True  # new file, not in cache → changed
+        if not is_cache_unchanged(before_cache_data, cache_data, path):
+            return True
+    return False
+
+
+@app.get("/index/change")
+def index_change_recommendation():
+    """
+    Return whether re-indexing is recommended.
+
+    Re-scanning the codebase is expensive (walking every file + hashing), so
+    this endpoint caches the result and only recomputes it once every
+    REINDEX_CHECK_INTERVAL seconds. Cheap to poll, still notices changes.
+
+    Returns:
+        Dict with `reindex_recommended` (bool) and `message` (str).
+    """
+    global reindex_recommended, _reindex_last_checked_at
+    now = time.time()
+    if now - _reindex_last_checked_at >= REINDEX_CHECK_INTERVAL:
+        reindex_recommended = is_repository_change()
+        _reindex_last_checked_at = now
+    return {
+        "reindex_recommended": reindex_recommended,
+        "message": "Codebase changed. Re-indexing is recommended." if reindex_recommended
+        else "Index is up to date.",
+    }
+

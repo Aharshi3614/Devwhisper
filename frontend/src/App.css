@@ -32,7 +32,7 @@
   margin: 0;
   line-height: 1.15;
   background: linear-gradient(135deg, var(--accent) 0%, #7e22ce 100%);
-  -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
   letter-spacing: -0.04em;
   padding: 4px 0;
@@ -578,4 +578,15 @@
 .clear-button:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+.reindex-banner {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: var(--text-h);
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
 }
