@@ -37,13 +37,13 @@ from handlers import route_command
 from logger import logger
 from errors import error_response
 from indexer import index_directory, progress_state
+from session_manager import SessionManager
 from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
 import json
 import os
 import time
 import asyncio
 import threading
-from collections import OrderedDict
 from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
@@ -71,10 +71,17 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # In-memory LRU cache for conversation history.
 # Structure: { session_id: {"history": [...], "last_used": <timestamp>} }
 # Protected by session_lock for thread safety.
-conversation_sessions = OrderedDict()
-session_lock = threading.Lock()
 MAX_SESSIONS = 100
 MAX_HISTORY_PER_SESSION = 5
+
+session_manager = SessionManager(
+    max_sessions=MAX_SESSIONS,
+    max_history_per_session=MAX_HISTORY_PER_SESSION,
+)
+
+# Backward-compatible aliases used by existing endpoints and tests.
+conversation_sessions = session_manager.sessions
+session_lock = session_manager.lock
 
 
 @app.on_event("startup")
@@ -119,58 +126,18 @@ def _get_session_id(message: dict) -> str:
 
 
 def _evict_if_needed():
-    """
-    Simple LRU eviction: drop the least-recently-used session if over capacity.
-
-    Relies on OrderedDict.popitem(last=False) which removes the oldest entry.
-    """
-    while len(conversation_sessions) > MAX_SESSIONS:
-        conversation_sessions.popitem(last=False)
+    """Evict least-recently-used sessions when over capacity."""
+    session_manager.evict_if_needed()
 
 
 def update_memory(session_id: str, user: str, assistant: str) -> None:
-    """
-    Append a user-assistant exchange to the session history.
-
-    Maintains a rolling window of MAX_HISTORY_PER_SESSION entries.
-    Updates last_used timestamp and promotes the session to MRU.
-
-    Args:
-        session_id: Unique session identifier.
-        user: The user's query text.
-        assistant: The assistant's response text.
-    """
-    with session_lock:
-        session = conversation_sessions.setdefault(
-            session_id, {"history": [], "last_used": time.time()}
-        )
-        session["history"].append(f"User: {user}\nAssistant: {assistant}")
-        if len(session["history"]) > MAX_HISTORY_PER_SESSION:
-            session["history"].pop(0)
-        session["last_used"] = time.time()
-        conversation_sessions.move_to_end(session_id)
-        _evict_if_needed()
+    """Append an exchange to a session's bounded history."""
+    session_manager.update(session_id, user, assistant)
 
 
 def get_memory(session_id: str) -> str:
-    """
-    Retrieve the formatted conversation history for a session.
-
-    Updates the session's last_used timestamp and promotes it to MRU.
-
-    Args:
-        session_id: Unique session identifier.
-
-    Returns:
-        Concatenated history string, or empty string if session not found.
-    """
-    with session_lock:
-        session = conversation_sessions.get(session_id)
-        if not session:
-            return ""
-        session["last_used"] = time.time()
-        conversation_sessions.move_to_end(session_id)
-        return "\n\n".join(session["history"])
+    """Return formatted history for a session."""
+    return session_manager.get(session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -373,8 +340,7 @@ def reset_memory():
     Returns:
         {"status": "memory cleared"}
     """
-    with session_lock:
-        conversation_sessions.clear()
+    session_manager.clear()
     return {"status": "memory cleared"}
 
 
