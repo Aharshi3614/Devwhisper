@@ -10,10 +10,12 @@ Usage:
     python healthcheck.py
 """
 
-import os
 import sys
+
 import requests
 from dotenv import load_dotenv
+
+from config import GROQ_API_KEY, QDRANT_API_KEY, QDRANT_URL
 
 load_dotenv()
 
@@ -23,8 +25,8 @@ def check_qdrant() -> tuple[bool, str]:
     try:
         from qdrant_client import QdrantClient
 
-        url = os.getenv("QDRANT_URL")
-        api_key = os.getenv("QDRANT_API_KEY")
+        url = QDRANT_URL
+        api_key = QDRANT_API_KEY
 
         if not url:
             return False, "QDRANT_URL is not set in the environment/.env file"
@@ -58,7 +60,7 @@ def check_embedder() -> tuple[bool, str]:
 def check_llm() -> tuple[bool, str]:
     """Check that the Groq LLM API responds to a simple test prompt."""
     try:
-        api_key = os.getenv("GROQ_API_KEY")
+        api_key = GROQ_API_KEY
         if not api_key:
             return False, "GROQ_API_KEY is not set in the environment/.env file"
 
