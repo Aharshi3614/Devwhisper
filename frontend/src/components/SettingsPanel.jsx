@@ -10,9 +10,17 @@ export default function SettingsPanel() {
     return localStorage.getItem('devwhisper_auto_submit') !== 'false'
   })
 
+  const [recordingTimeout, setRecordingTimeout] = useState(() => {
+    return parseInt(localStorage.getItem('devwhisper_recording_timeout') || '30', 10)
+  })
+
   useEffect(() => {
     localStorage.setItem('devwhisper_auto_submit', autoSubmitVoice)
   }, [autoSubmitVoice])
+
+  useEffect(() => {
+    localStorage.setItem('devwhisper_recording_timeout', recordingTimeout)
+  }, [recordingTimeout])
 
   // Close modal on Escape key press
   useEffect(() => {
@@ -89,6 +97,24 @@ export default function SettingsPanel() {
                       onChange={(e) => setAutoSubmitVoice(e.target.checked)}
                       className="setting-checkbox"
                     />
+                  </div>
+                </div>
+                <div className="setting-item" style={{ marginTop: '12px' }}>
+                  <div className="setting-info">
+                    <span className="setting-label">Max Recording Timeout</span>
+                    <span className="setting-desc">Auto-stop recording after this many seconds (5–120)</span>
+                  </div>
+                  <div className="setting-control">
+                    <input
+                      type="number"
+                      min="5"
+                      max="120"
+                      value={recordingTimeout}
+                      onChange={(e) => setRecordingTimeout(Math.min(120, Math.max(5, Number(e.target.value))))}
+                      className="setting-number-input"
+                      aria-label="Max recording timeout in seconds"
+                    />
+                    <span style={{ fontSize: '0.8rem', color: '#666', marginLeft: '4px' }}>s</span>
                   </div>
                 </div>
               </div>

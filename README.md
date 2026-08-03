@@ -189,6 +189,18 @@ You can test DevWhisper's conversation flow directly from your terminal — with
 
 ---
 
+## ⚙️ Configurable Recording Timeout
+
+The maximum voice recording duration is configurable via the **Settings panel** (⚙️ icon, top-right).
+
+- Default: **30 seconds**
+- Range: **5 – 120 seconds**
+- The setting is saved in `localStorage` and persists across sessions.
+- While recording, a **live countdown** is displayed on the mic button showing remaining seconds.
+- Recording **stops automatically** when the timeout expires and submits whatever was captured.
+
+---
+
 ## ⚠️ Notes
 
 - The ngrok URL changes every time you restart it — remember to update the Server URL in your Vapi tool settings each time.
