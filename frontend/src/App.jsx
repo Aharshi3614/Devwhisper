@@ -22,6 +22,16 @@ function Home() {
   const latestTranscriptRef = useRef('')
 
   // Retrieve or generate a stable session ID so query history shows up in history panel
+  const [hasStarted, setHasStarted] = useState(false)
+
+  const SUGGESTED_PROMPTS = [
+    "What does the preprocess function do?",
+    "Where is the model saved after training?",
+    "How do I debug a KeyError in the pipeline?",
+    "What functions are defined in main.py?"
+  ]
+
+  // Retrieve or generate a stable session ID so query history shows up in history panel
   const [sessionId, setSessionId] = useState(() => {
     const key = 'devwhisper_session_id'
     const existing = sessionStorage.getItem(key)
@@ -38,6 +48,7 @@ function Home() {
     setResponse('')
     setQueryText('')
     setError(null)
+    setHasStarted(false)
 
     const newId = 'web-' + Math.random().toString(36).substring(2, 9)
     sessionStorage.setItem('devwhisper_session_id', newId)
@@ -113,6 +124,7 @@ function Home() {
     abortControllerRef.current = new AbortController()
     const signal = abortControllerRef.current.signal
 
+    setHasStarted(true)
     setLoading(true)
     setError(null)
     setResponse('')
@@ -365,6 +377,24 @@ function Home() {
             </div>
           </div>
         </form>
+
+        {!hasStarted && (
+          <div className="suggested-prompts">
+            <p className="suggested-prompts-label">Try asking:</p>
+            <div className="suggested-prompts-grid">
+              {SUGGESTED_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  className="prompt-chip"
+                  onClick={() => setQueryText(prompt)}
+                  type="button"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Response & Error Rendering */}
         <ResponseOutput response={response} loading={loading} error={error} />

@@ -540,3 +540,51 @@
   opacity: 0.35;
   cursor: not-allowed;
 }
+
+/* --- Suggested Prompts --- */
+.suggested-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.suggested-prompts-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  opacity: 0.7;
+  margin: 0;
+}
+
+.suggested-prompts-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prompt-chip {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 20px;
+  padding: 7px 14px;
+  font-size: 0.85rem;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.prompt-chip:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 480px) {
+  .prompt-chip {
+    font-size: 0.8rem;
+    padding: 6px 12px;
+  }
+}
