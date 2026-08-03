@@ -287,13 +287,7 @@ def index_directory(directory: str) -> None:
 
     try:
         # ── Load previous cache for incremental mode ──────────────────────
-        before_cache_data = {}
-        if os.path.exists(".index_cache.json"):
-            try:
-                with open(".index_cache.json", "r", encoding="utf-8") as f:
-                    before_cache_data = json.load(f)
-            except Exception:
-                logger.warning("Corrupted .index_cache.json found.")
+        before_cache_data = get_before_cache_data()
 
         if isinstance(before_cache_data, dict):
             metadata = before_cache_data.get("_metadata")
@@ -340,11 +334,8 @@ def index_directory(directory: str) -> None:
 
             # Skip unchanged files in incremental mode
             if "--incremental" in sys.argv and path in before_cache_data:
-                if abs(before_cache_data[path]["mtime"] - cache_data[path]["mtime"]) <= 0.001:
+                if is_cache_unchanged(before_cache_data, cache_data, path):
                     continue
-                else:
-                    if before_cache_data[path]["hash"] == cache_data[path]["hash"]:
-                        continue
 
             chunks = get_file_chunks(path)
             line_count = sum(1 for c in chunks if not c.get("is_symbol"))
@@ -487,6 +478,45 @@ def load_gitignore_rules(root: str) -> list[tuple[str, PathSpec]]:
         rules.append((dirpath, spec))
     return rules
 
+def get_before_cache_data() -> dict:
+    """
+    Load the previous run's cache data from .index_cache.json.
+
+    Returns:
+        Dictionary of cached file metadata, or an empty dict if the file
+        is missing or unreadable.
+    """
+    before_cache_data = {}
+    if os.path.exists(".index_cache.json"):
+        try:
+            with open(".index_cache.json", "r", encoding="utf-8") as f:
+                before_cache_data = json.load(f)
+        except Exception:
+            logger.warning("Corrupted .index_cache.json found.")
+    return before_cache_data
+
+def is_cache_unchanged(before_cache_data: dict, cache_data: dict, path: str) -> bool:
+    """
+    Return True if *path*'s file is unchanged since the previous index run.
+
+    Compares the stored mtime first (within a 1ms tolerance); if that differs,
+    falls back to comparing the file hash. Used by incremental indexing to
+    skip files that have not changed.
+
+    Args:
+        before_cache_data: Cache data from the previous run.
+        cache_data: Cache data being built for the current run.
+        path: File to compare.
+
+    Returns:
+        True if the file is unchanged (can be skipped), else False.
+    """
+    if abs(before_cache_data[path]["mtime"] - cache_data[path]["mtime"]) <= 0.001:
+        return True
+    else:
+        if before_cache_data[path]["hash"] == cache_data[path]["hash"]:
+            return True
+    return False
 
 def _is_gitignored(path: str, rules: list[tuple[str, PathSpec]]) -> bool:
     """
