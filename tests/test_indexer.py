@@ -38,8 +38,7 @@ Run `pip install -r requirements.txt`.
         tmp_path = f.name
 
     try:
-        base_dir = os.path.dirname(tmp_path)
-        chunks = chunk_file(tmp_path, base_dir=base_dir, chunk_size=5)
+        chunks = chunk_file(tmp_path, chunk_size=5)
 
         assert len(chunks) > 0
         assert chunks[0]["file"] == os.path.basename(tmp_path)
@@ -55,8 +54,7 @@ def test_chunk_file_skips_empty_markdown():
         tmp_path = f.name
 
     try:
-        base_dir = os.path.dirname(tmp_path)
-        chunks = chunk_file(tmp_path, base_dir=base_dir)
+        chunks = chunk_file(tmp_path)
         assert chunks == []
     finally:
         os.unlink(tmp_path)
