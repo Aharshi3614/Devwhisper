@@ -60,6 +60,8 @@ from symbol_parser import extract_symbols_from_file
 import pickle
 from rank_bm25 import BM25Okapi
 
+INDEX_FILE_BATCH_SIZE = 20
+
 
 # ---------------------------------------------------------------------------
 # Qdrant client and embedder (module-level singletons)
@@ -247,7 +249,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     return chunks
 
 
-def index_directory(directory: str) -> None:
+def index_directory(directory: str) -> None:  # noqa: C901
     """
     Main indexing pipeline: scan, chunk, embed, and store codebase into Qdrant + BM25.
 
@@ -304,7 +306,23 @@ def index_directory(directory: str) -> None:
             create_collection()
 
         points = []
+        total_uploaded = 0
         cache_data = {}
+
+        def upsert_pending(indexed_files: int) -> None:
+            """Upload and release the current bounded point batch."""
+            nonlocal points, total_uploaded
+            if not points:
+                return
+
+            batch = points
+            points = []
+            client.upsert(
+                collection_name=QDRANT_COLLECTION_NAME,
+                points=batch,
+            )
+            total_uploaded += len(batch)
+            print(f"Indexed {indexed_files}/{total_files} files")
 
         # ── Collect eligible files ────────────────────────────────────────
         all_files, skipped_files = collect_indexable_files(
@@ -335,6 +353,8 @@ def index_directory(directory: str) -> None:
             # Skip unchanged files in incremental mode
             if "--incremental" in sys.argv and path in before_cache_data:
                 if is_cache_unchanged(before_cache_data, cache_data, path):
+                    if idx % INDEX_FILE_BATCH_SIZE == 0 or idx == total_files:
+                        upsert_pending(idx)
                     continue
 
             chunks = get_file_chunks(path)
@@ -357,13 +377,13 @@ def index_directory(directory: str) -> None:
                     )
                 )
 
-        # ── Upsert to Qdrant ──────────────────────────────────────────────
-        if points:
-            client.upsert(
-                collection_name=QDRANT_COLLECTION_NAME,
-                points=points,
+            if idx % INDEX_FILE_BATCH_SIZE == 0 or idx == total_files:
+                upsert_pending(idx)
+
+        if total_uploaded:
+            print(
+                f"\nDone. Indexed {total_uploaded} total chunks into Qdrant."
             )
-            print(f"\nDone. Indexed {len(points)} total chunks into Qdrant.")
         else:
             print("\nNo changes detected. Nothing to upsert.")
 
@@ -403,7 +423,7 @@ def index_directory(directory: str) -> None:
             "running": False,
             "percent": 100,
             "status": "done",
-            "message": f"Indexing complete. {total_files} file(s) processed{skip_summary}, {len(points)} chunks uploaded.",
+            "message": f"Indexing complete. {total_files} file(s) processed{skip_summary}, {total_uploaded} chunks uploaded.",
         })
 
     except Exception as e:
@@ -448,6 +468,7 @@ def tokenize(text: str) -> list[str]:
     """
     import re
     return [t.lower() for t in re.findall(r"\b\w+\b", text)]
+
 
 def load_gitignore_rules(root: str) -> list[tuple[str, PathSpec]]:
     """
