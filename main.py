@@ -40,6 +40,8 @@ from indexer import index_directory, progress_state, get_before_cache_data, coll
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
 from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
+import queue
+import uuid
 import json
 import os
 import time
@@ -97,9 +99,119 @@ REINDEX_CHECK_INTERVAL = 60  # seconds
 _reindex_last_checked_at = 0.0
 
 
+# ---------------------------------------------------------------------------
+# Indexing Queue & Worker
+# ---------------------------------------------------------------------------
+indexing_queue = queue.Queue()
+jobs_history = []
+
+def queue_worker():
+    global progress_state
+    while True:
+        try:
+            job = indexing_queue.get()
+            if job is None:
+                break
+
+            job_id = job["id"]
+            job["status"] = "running"
+            job["started_at"] = time.time()
+            job["message"] = f"Indexing {job['name']}..."
+
+            progress_state.update({
+                "running": True,
+                "current": 0,
+                "total": 0,
+                "percent": 0,
+                "current_file": "",
+                "status": "running",
+                "message": f"Starting job: {job['name']}",
+                "skipped": [],
+                "skipped_count": 0,
+            })
+
+            try:
+                if job["type"] == "upload":
+                    temp_zip_path = job["temp_zip_path"]
+
+                    # Check Zip Slip path traversal
+                    is_path_traversal = False
+                    invalid_member = ""
+                    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+                        for member in zip_ref.namelist():
+                            norm_path = os.path.normpath(member)
+                            if norm_path.startswith("..") or os.path.isabs(norm_path):
+                                is_path_traversal = True
+                                invalid_member = member
+                                break
+
+                        if not is_path_traversal:
+                            if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
+                                shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
+                            os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
+                            zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
+
+                    # Clean up temp file
+                    if os.path.exists(temp_zip_path):
+                        try:
+                            os.remove(temp_zip_path)
+                        except Exception:
+                            pass
+
+                    if is_path_traversal:
+                        raise Exception(f"Path traversal detected in ZIP: {invalid_member}")
+
+                    # Validate extracted files
+                    has_supported_file = False
+                    for root, dirs, files in os.walk(SAMPLE_CODEBASE_DIRECTORY):
+                        for f in files:
+                            if f.endswith((".py", ".md")):
+                                has_supported_file = True
+                                break
+                        if has_supported_file:
+                            break
+
+                    if not has_supported_file:
+                        if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
+                            shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
+                        raise Exception("No supported files (.py, .md) found in the uploaded ZIP archive.")
+
+                # Run the actual indexing pipeline
+                index_directory(SAMPLE_CODEBASE_DIRECTORY)
+
+                job["status"] = "completed"
+                job["percent"] = 100
+                job["message"] = "Indexing completed successfully."
+
+                progress_state.update({
+                    "running": False,
+                    "status": "done",
+                    "percent": 100,
+                    "message": "Indexing completed successfully.",
+                })
+            except Exception as e:
+                logger.error("Job %s failed: %s", job_id, e)
+                job["status"] = "failed"
+                job["error"] = str(e)
+                job["message"] = f"Failed: {e}"
+
+                progress_state.update({
+                    "running": False,
+                    "status": "error",
+                    "message": f"Indexing failed: {e}",
+                })
+            finally:
+                job["finished_at"] = time.time()
+                indexing_queue.task_done()
+        except Exception as main_err:
+            logger.error("Error in queue worker main loop: %s", main_err)
+            time.sleep(1)
+
+
 @app.on_event("startup")
 async def startup_event():
     """Warm up the embedder and check whether re-indexing is recommended."""
+    threading.Thread(target=queue_worker, daemon=True).start()
     global reindex_recommended, _reindex_last_checked_at
     reindex_recommended = is_repository_change()
     _reindex_last_checked_at = time.time()  # start the TTL clock at startup
@@ -503,30 +615,36 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
 @app.post("/index/start")
 def start_indexing():
     """
-    Trigger codebase indexing in a background thread.
-
-    Returns:
-        {"status": "started", "message": "..."} or 409 if already running.
+    Queue codebase indexing.
     """
-    if progress_state.get("running"):
-        return error_response(409, "Indexing is already in progress.")
-    threading.Thread(target=index_directory, args=(SAMPLE_CODEBASE_DIRECTORY,), daemon=True).start()
-    return {"status": "started", "message": "Indexing started. Poll /index/progress for updates."}
+    job_id = str(uuid.uuid4())
+    job = {
+        "id": job_id,
+        "type": "reindex",
+        "name": "Manual Re-index",
+        "status": "pending",
+        "percent": 0,
+        "message": "Pending in queue...",
+        "created_at": time.time(),
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "error": None
+    }
+    jobs_history.append(job)
+    indexing_queue.put(job)
+    return {"status": "started", "message": "Manual re-indexing job queued.", "job_id": job_id}
 
 
 @app.post("/index/upload")
 async def upload_codebase(file: UploadFile = File(...)):
     """
-    Accept a ZIP archive of a local codebase, extract it, and automatically index it.
+    Accept a ZIP archive of a local codebase, queue it, extract it, and automatically index it sequentially.
     """
-    if progress_state.get("running"):
-        return error_response(409, "Indexing is already in progress.")
-
     if not file.filename.endswith(".zip"):
         return error_response(400, "Only ZIP archives are supported.")
 
-    # Temporarily save the zip file on disk
-    temp_zip_path = "temp_upload.zip"
+    job_id = str(uuid.uuid4())
+    temp_zip_path = f"temp_upload_{job_id}.zip"
     try:
         with open(temp_zip_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -534,71 +652,33 @@ async def upload_codebase(file: UploadFile = File(...)):
         logger.error("Failed to write uploaded file to disk: %s", e)
         return error_response(500, f"Failed to save uploaded file: {e}")
 
-    # Validate ZIP file structure
+    # Validate ZIP file structure immediately to give quick feedback
     if not zipfile.is_zipfile(temp_zip_path):
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
         return error_response(400, "Invalid ZIP archive.")
 
-    is_path_traversal = False
-    invalid_member = ""
-    try:
-        # Check Zip Slip path traversal
-        with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-            for member in zip_ref.namelist():
-                # Avoid relative paths pointing outside target
-                norm_path = os.path.normpath(member)
-                if norm_path.startswith("..") or os.path.isabs(norm_path):
-                    is_path_traversal = True
-                    invalid_member = member
-                    break
-
-            if not is_path_traversal:
-                # Recreate target directory cleanly to ensure isolation
-                if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
-                    shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
-                os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
-
-                # Extract the ZIP
-                zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
-    except Exception as e:
-        logger.error("Error during ZIP validation/extraction: %s", e)
-        if os.path.exists(temp_zip_path):
-            try:
-                os.remove(temp_zip_path)
-            except Exception:
-                pass
-        return error_response(500, f"Failed to process ZIP archive: {e}")
-
-    # Clean up temp file
-    if os.path.exists(temp_zip_path):
-        os.remove(temp_zip_path)
-
-    if is_path_traversal:
-        return error_response(400, f"Path traversal detected in ZIP: {invalid_member}")
-
-    # Validate that extracted directory has supported files (.py, .md)
-    has_supported_file = False
-    for root, dirs, files in os.walk(SAMPLE_CODEBASE_DIRECTORY):
-        for f in files:
-            if f.endswith((".py", ".md")):
-                has_supported_file = True
-                break
-        if has_supported_file:
-            break
-
-    if not has_supported_file:
-        # Clean up the directory since it's invalid/unsupported
-        if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
-            shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
-        return error_response(400, "No supported files (.py, .md) found in the uploaded ZIP archive.")
-
-    # Trigger background indexing
-    threading.Thread(target=index_directory, args=(SAMPLE_CODEBASE_DIRECTORY,), daemon=True).start()
+    # Queue the job
+    job = {
+        "id": job_id,
+        "type": "upload",
+        "name": f"Upload: {file.filename}",
+        "temp_zip_path": temp_zip_path,
+        "status": "pending",
+        "percent": 0,
+        "message": "Pending in queue...",
+        "created_at": time.time(),
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "error": None
+    }
+    jobs_history.append(job)
+    indexing_queue.put(job)
 
     return {
         "status": "started",
-        "message": "ZIP file uploaded and extracted successfully. Indexing started in the background."
+        "message": "ZIP file uploaded successfully. Indexing job queued.",
+        "job_id": job_id
     }
 
 
@@ -622,6 +702,14 @@ async def index_progress():
             await asyncio.sleep(0.5)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/index/queue")
+def get_indexing_queue():
+    """
+    Retrieve the current indexing jobs queue and history.
+    """
+    return {"jobs": jobs_history}
 
 
 @app.get("/history")

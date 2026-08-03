@@ -11,6 +11,7 @@ export default function SettingsPanel() {
   })
 
   const [progress, setProgress] = useState(null)
+  const [queue, setQueue] = useState([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [uploadSuccess, setUploadSuccess] = useState('')
@@ -55,6 +56,25 @@ export default function SettingsPanel() {
     }
   }, [isOpen])
 
+  const fetchQueue = useCallback(async () => {
+    try {
+      const res = await fetch('/index/queue')
+      if (res.ok) {
+        const data = await res.json()
+        setQueue(data.jobs || [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch indexing queue:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isOpen) return
+    fetchQueue()
+    const timer = setInterval(fetchQueue, 3000)
+    return () => clearInterval(timer)
+  }, [isOpen, fetchQueue])
+
   const handleDrag = useCallback((e) => {
     e.preventDefault()
     e.stopPropagation()
@@ -90,15 +110,16 @@ export default function SettingsPanel() {
         throw new Error(data.message || 'Upload failed.')
       }
 
-      setUploadSuccess(data.message || 'ZIP uploaded and extraction started.')
+      setUploadSuccess(data.message || 'ZIP uploaded successfully.')
       setUploadError('')
+      fetchQueue()
     } catch (err) {
       setUploadError(err.message || 'An error occurred during upload.')
       setUploadSuccess('')
     } finally {
       setUploading(false)
     }
-  }, [])
+  }, [fetchQueue])
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
@@ -130,10 +151,11 @@ export default function SettingsPanel() {
         throw new Error(data.message || 'Failed to start indexing.')
       }
       setUploadSuccess(data.message || 'Indexing started.')
+      fetchQueue()
     } catch (err) {
       setUploadError(err.message || 'Failed to start indexing.')
     }
-  }, [progress])
+  }, [progress, fetchQueue])
 
   return (
     <>
@@ -282,6 +304,36 @@ export default function SettingsPanel() {
                           ⚠️ {progress.skipped_count} file(s) skipped.
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* Indexing Queue List */}
+                  {queue.length > 0 && (
+                    <div className="indexing-queue-container">
+                      <h4 className="queue-title">📋 Queue Jobs ({queue.filter(j => j.status === 'pending' || j.status === 'running').length} active)</h4>
+                      <div className="queue-list">
+                        {queue.map((job) => (
+                          <div key={job.id} className={`queue-item status-${job.status}`}>
+                            <div className="queue-item-header">
+                              <span className="job-name">{job.name}</span>
+                              <span className={`job-status-tag status-${job.status}`}>
+                                {job.status.toUpperCase()}
+                              </span>
+                            </div>
+                            <div className="queue-item-meta">
+                              {job.status === 'running' && progress && (
+                                <span className="job-progress-pct">{progress.percent}%</span>
+                              )}
+                              {job.status === 'failed' && (
+                                <span className="job-error">⚠️ {job.error}</span>
+                              )}
+                              {job.status === 'completed' && (
+                                <span className="job-success">✓ Done</span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
