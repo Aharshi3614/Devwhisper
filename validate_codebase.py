@@ -6,7 +6,7 @@ Performs pre-flight checks to detect common issues early.
 
 import os
 import sys
-from config import SUPPORTED_EXTENSIONS
+from config import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB
 
 IGNORED_DIRS = {"__pycache__", ".git", ".mypy_cache", ".pytest_cache", ".venv", "venv", "node_modules"}
 
@@ -76,8 +76,16 @@ def validate_codebase(directory):
     for filepath in found_files:
         try:
             # Check if file is empty
-            if os.path.getsize(filepath) == 0:
+            size = os.path.getsize(filepath)
+            if size == 0:
                 skipped_files.append((filepath, "File is empty"))
+                continue
+
+            # Check if file exceeds size limit
+            if size > MAX_FILE_SIZE_BYTES:
+                skipped_files.append(
+                    (filepath, f"Exceeds {MAX_FILE_SIZE_MB} MB size limit ({size / (1024 * 1024):.2f} MB)")
+                )
                 continue
 
             # Try to read the file to check if it's readable

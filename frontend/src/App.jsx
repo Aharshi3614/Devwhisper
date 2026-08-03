@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
 import ThemeToggle from './components/ThemeToggle.jsx'
 import MicButton from './components/MicButton.jsx'
 import './App.css'
+import SettingsPanel from './components/SettingsPanel.jsx'
 
 function Home() {
   const [queryText, setQueryText] = useState('')
@@ -13,11 +14,17 @@ function Home() {
   const [error, setError] = useState(null)
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
+  const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
+  
   const recognitionRef = useRef(null)
   const isMountedRef = useRef(false)
   const abortControllerRef = useRef(null)
   const mockTimerRef = useRef(null)
+  const latestTranscriptRef = useRef('')
+  const submitQueryTextRef = useRef(null)
+  const redirectedRef = useRef(false)
 
+  const navigate = useNavigate()
 
   // Retrieve or generate a stable session ID so that query history shows up in the history panel
   const [sessionId, setSessionId] = useState(() => {
@@ -29,107 +36,6 @@ function Home() {
     return newId
   })
 
-  // Initialize Speech Recognition API
-  useEffect(() => {
-    isMountedRef.current = true
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (SpeechRecognition) {
-      setSpeechSupported(true)
-      const rec = new SpeechRecognition()
-      rec.continuous = true
-      rec.interimResults = true
-      rec.lang = 'en-US'
-
-      rec.onstart = () => {
-        if (isMountedRef.current) {
-          setIsListening(true)
-        }
-      }
-
-      rec.onresult = (event) => {
-        let transcript = ''
-        for (let i = 0; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript
-        }
-        if (isMountedRef.current) {
-          setQueryText(transcript)
-        }
-      }
-
-      rec.onerror = (err) => {
-        console.error('Speech Recognition Error:', err)
-        if (isMountedRef.current) {
-          setIsListening(false)
-        }
-      }
-
-      rec.onend = () => {
-        if (isMountedRef.current) {
-          setIsListening(false)
-        }
-      }
-
-      recognitionRef.current = rec
-    }
-
-        return () => {
-      isMountedRef.current = false
-
-      if (recognitionRef.current) {
-        recognitionRef.current.abort()
-      }
-
-      if (mockTimerRef.current) {
-        clearTimeout(mockTimerRef.current)
-        mockTimerRef.current = null
-      }
-
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort()
-      }
-    }
-  }, [])
-
-  const handleMicClick = () => {
-    if (speechSupported && recognitionRef.current) {
-      if (isListening) {
-        recognitionRef.current.stop()
-      } else {
-        setQueryText('')
-        try {
-          recognitionRef.current.start()
-        } catch (err) {
-          console.error('Failed to start speech recognition:', err)
-        }
-      }
-    } else {
-      // Mock Fallback for browsers/environments without SpeechRecognition
-      if (isListening) {
-        setIsListening(false)
-        if (mockTimerRef.current) {
-          clearTimeout(mockTimerRef.current)
-          mockTimerRef.current = null
-        }
-      } else {
-        setIsListening(true)
-        setQueryText('Listening...')
-        if (mockTimerRef.current) {
-          clearTimeout(mockTimerRef.current)
-        }
-        mockTimerRef.current = setTimeout(() => {
-          setIsListening(prev => {
-            if (prev) {
-              setQueryText('In main.py, what functions are found?')
-              return false
-            }
-            return prev
-          })
-          mockTimerRef.current = null
-        }, 3000)
-      }
-    }
-  }
-
   const handleClearChat = async () => {
     if (loading) return
 
@@ -140,6 +46,8 @@ function Home() {
     const newId = 'web-' + Math.random().toString(36).substring(2, 9)
     sessionStorage.setItem('devwhisper_session_id', newId)
     setSessionId(newId)
+    // Allow the fresh session to get its own hand-off to /history.
+    redirectedRef.current = false
 
     try {
       const res = await fetch('/reset', {
@@ -152,8 +60,8 @@ function Home() {
       console.error('Error resetting conversation memory:', err)
     }
   }
-
-  const handleWebhookFallback = async (fallbackQuery) => {
+  // Webhook Fallback Function
+  const handleWebhookFallback = useCallback(async (fallbackQuery) => {
     const q = fallbackQuery !== undefined ? fallbackQuery : queryText
     const payload = {
       message: {
@@ -197,11 +105,14 @@ function Home() {
         setResponse('No response was generated by the codebase assistant.')
       }
     }
-  }
+  }, [queryText, sessionId])
 
-  const handleSubmit = async (e) => {
-    if (e) e.preventDefault()
-    if (!queryText.trim() || loading || isListening) return
+  // Submit Query Function
+  const submitQueryText = useCallback(async (textToSubmit) => {
+    const currentQuery = textToSubmit || queryText
+    if (!currentQuery.trim() || loading) return
+
+    setLastSubmittedQuery(currentQuery)
 
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -209,11 +120,9 @@ function Home() {
     abortControllerRef.current = new AbortController()
     const signal = abortControllerRef.current.signal
 
-    const currentQuery = queryText
     setLoading(true)
     setError(null)
     setResponse('')
-    setQueryText('')
 
     try {
       const responseStream = await fetch('/stream', {
@@ -272,6 +181,150 @@ function Home() {
         setLoading(false)
       }
     }
+  }, [queryText, loading, sessionId, handleWebhookFallback])
+
+  // Form Submit Handler
+  const handleSubmit = (e) => {
+    if (e) e.preventDefault()
+    if (isListening) return
+    submitQueryText(queryText)
+  }
+
+  const handleRetry = useCallback(() => {
+    submitQueryText(lastSubmittedQuery)
+  }, [submitQueryText, lastSubmittedQuery])
+
+  // Keep a ref pointing at the latest submitQueryText so the mount-only
+  // speech-recognition effect never goes stale
+  useEffect(() => {
+    submitQueryTextRef.current = submitQueryText
+  }, [submitQueryText])
+
+  // After the first exchange completes, hand off to the conversation view.
+  useEffect(() => {
+    if (!loading && response && !redirectedRef.current) {
+      redirectedRef.current = true
+      navigate(`/history?session_id=${encodeURIComponent(sessionId)}`)
+    }
+  }, [loading, response, sessionId, navigate])
+
+  // Initialize Speech Recognition API with complete E2E Voice Flow
+  useEffect(() => {
+    isMountedRef.current = true
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (SpeechRecognition) {
+      setSpeechSupported(true)
+      const rec = new SpeechRecognition()
+      rec.continuous = false // Auto-stop when user stops speaking
+      rec.interimResults = true
+      rec.lang = 'en-US'
+
+      rec.onstart = () => {
+        if (isMountedRef.current) {
+          setIsListening(true)
+          setError(null)
+        }
+      }
+
+      rec.onresult = (event) => {
+        let transcript = ''
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript
+        }
+        if (isMountedRef.current) {
+          setQueryText(transcript)
+          latestTranscriptRef.current = transcript
+        }
+      }
+
+      rec.onerror = (err) => {
+        console.error('Speech Recognition Error:', err)
+        if (isMountedRef.current) {
+          setIsListening(false)
+          if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
+            setError('Microphone permission denied. Please allow mic access in your browser.')
+          } else if (err.error === 'no-speech') {
+            setError('No speech was detected. Please try pressing the mic and speaking again.')
+          } else if (err.error === 'network') {
+            setError('Speech recognition failed due to a network error.')
+          } else {
+            setError(`Speech recognition error: ${err.error}`)
+          }
+        }
+      }
+
+      rec.onend = () => {
+        if (isMountedRef.current) {
+          setIsListening(false)
+          const finalQuery = latestTranscriptRef.current.trim()
+          if (finalQuery) {
+            submitQueryTextRef.current(finalQuery)
+          }
+        }
+      }
+
+      recognitionRef.current = rec
+    }
+
+    return () => {
+      isMountedRef.current = false
+
+      if (recognitionRef.current) {
+        recognitionRef.current.abort()
+      }
+
+      if (mockTimerRef.current) {
+        clearTimeout(mockTimerRef.current)
+        mockTimerRef.current = null
+      }
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
+  }, [])
+
+  const handleMicClick = () => {
+    if (speechSupported && recognitionRef.current) {
+      if (isListening) {
+        recognitionRef.current.stop()
+      } else {
+        setQueryText('')
+        latestTranscriptRef.current = ''
+        setError(null)
+        try {
+          recognitionRef.current.start()
+        } catch (err) {
+          console.error('Failed to start speech recognition:', err)
+          setError('Failed to activate microphone. Please try again.')
+        }
+      }
+    } else {
+      // Mock Fallback for browsers/environments without SpeechRecognition
+      if (isListening) {
+        setIsListening(false)
+        if (mockTimerRef.current) {
+          clearTimeout(mockTimerRef.current)
+          mockTimerRef.current = null
+        }
+      } else {
+        setIsListening(true)
+        setQueryText('Listening...')
+        setError(null)
+        if (mockTimerRef.current) {
+          clearTimeout(mockTimerRef.current)
+        }
+        mockTimerRef.current = setTimeout(() => {
+          if (isMountedRef.current) {
+            setIsListening(false)
+            const sampleQuery = 'In main.py, what functions are found?'
+            setQueryText(sampleQuery)
+            submitQueryText(sampleQuery)
+            mockTimerRef.current = null
+          }
+        }, 3000)
+      }
+    }
   }
 
   return (
@@ -310,7 +363,7 @@ function Home() {
                   <span className={`status-dot ${isListening ? 'listening' : 'ready'}`}></span>
                   <span className="status-message">
                     {isListening 
-                      ? (speechSupported ? "Listening..." : "Listening (Mock)...") 
+                      ? (speechSupported ? "Listening... Speak now" : "Listening (Mock)...") 
                       : "Voice assistant ready"}
                   </span>
                 </div>
@@ -358,7 +411,7 @@ function App() {
   return (
     <BrowserRouter>
       <div className="app">
-        <ThemeToggle />
+        <SettingsPanel />
 
         <Routes>
           <Route path="/" element={<Home />} />

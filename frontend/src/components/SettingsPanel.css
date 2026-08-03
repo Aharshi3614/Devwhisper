@@ -1,0 +1,247 @@
+.settings-toggle-btn {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.settings-toggle-btn:hover {
+  transform: rotate(30deg);
+  background-color: var(--bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+.settings-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* Base Modal Styling */
+.settings-modal {
+  background-color: #ffffff;
+  color: #1a1a1a;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 480px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: scaleUp 0.2s ease-out;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.settings-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: inherit;
+}
+
+.settings-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  color: #666666;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.settings-close-btn:hover {
+  color: #000000;
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.settings-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.settings-section {
+  background-color: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.setting-item.vertical {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setting-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: inherit;
+}
+
+.setting-desc {
+  font-size: 0.8rem;
+  color: #666666;
+}
+
+.setting-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.shortcuts-list {
+  margin: 4px 0 0 0;
+  padding-left: 20px;
+  font-size: 0.85rem;
+  color: #444444;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shortcuts-list code {
+  background-color: rgba(0, 0, 0, 0.07);
+  color: #222222;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+.settings-footer {
+  padding: 12px 20px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-done-btn {
+  background-color: #0066cc;
+  color: #ffffff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.settings-done-btn:hover {
+  opacity: 0.9;
+}
+
+/* ==========================================================================
+   Dark Mode Styles (Targeting body.dark / body.theme-dark / [data-theme='dark'])
+   ========================================================================== */
+body.dark .settings-modal,
+body.theme-dark .settings-modal,
+[data-theme='dark'] .settings-modal {
+  background-color: #1e1e2e;
+  color: #f1f1f1;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+body.dark .settings-header,
+body.theme-dark .settings-header,
+[data-theme='dark'] .settings-header {
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark .settings-close-btn,
+body.theme-dark .settings-close-btn,
+[data-theme='dark'] .settings-close-btn {
+  color: #aaaaaa;
+}
+
+body.dark .settings-close-btn:hover,
+body.theme-dark .settings-close-btn:hover,
+[data-theme='dark'] .settings-close-btn:hover {
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark .settings-section,
+body.theme-dark .settings-section,
+[data-theme='dark'] .settings-section {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark .setting-desc,
+body.theme-dark .setting-desc,
+[data-theme='dark'] .setting-desc {
+  color: #aaaaaa;
+}
+
+body.dark .shortcuts-list,
+body.theme-dark .shortcuts-list,
+[data-theme='dark'] .shortcuts-list {
+  color: #cccccc;
+}
+
+body.dark .shortcuts-list code,
+body.theme-dark .shortcuts-list code,
+[data-theme='dark'] .shortcuts-list code {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+body.dark .settings-footer,
+body.theme-dark .settings-footer,
+[data-theme='dark'] .settings-footer {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleUp {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}

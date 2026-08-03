@@ -1,0 +1,78 @@
+.loading-spinner-container {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* Base Spinner Ring */
+.spinner-ring {
+  border-style: solid;
+  border-radius: 50%;
+  border-color: var(--border-color, rgba(255, 255, 255, 0.15));
+  border-top-color: var(--primary-color, #0066cc);
+  animation: spin 0.8s linear infinite;
+  box-sizing: border-box;
+}
+
+/* Size Variants */
+.loading-spinner-container.size-small .spinner-ring {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+}
+
+.loading-spinner-container.size-medium .spinner-ring {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+}
+
+.loading-spinner-container.size-large .spinner-ring {
+  width: 48px;
+  height: 48px;
+  border-width: 4px;
+}
+
+/* Label Styling */
+.spinner-label {
+  color: var(--text-muted, #a1a1aa);
+  font-family: inherit;
+}
+
+.loading-spinner-container.size-small .spinner-label {
+  font-size: 0.75rem;
+}
+
+.loading-spinner-container.size-medium .spinner-label {
+  font-size: 0.875rem;
+}
+
+.loading-spinner-container.size-large .spinner-label {
+  font-size: 1rem;
+}
+
+/* Keyframes */
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Dark Theme Specific Optimizations */
+body.dark .spinner-ring,
+body.theme-dark .spinner-ring,
+[data-theme='dark'] .spinner-ring {
+  border-color: rgba(255, 255, 255, 0.15);
+  border-top-color: var(--primary-color, #38bdf8);
+}
+
+body.dark .spinner-label,
+body.theme-dark .spinner-label,
+[data-theme='dark'] .spinner-label {
+  color: #a1a1aa;
+}
