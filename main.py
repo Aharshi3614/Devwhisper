@@ -524,6 +524,8 @@ async def upload_codebase(file: UploadFile = File(...)):
             os.remove(temp_zip_path)
         return error_response(400, "Invalid ZIP archive.")
 
+    is_path_traversal = False
+    invalid_member = ""
     try:
         # Check Zip Slip path traversal
         with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
@@ -531,26 +533,33 @@ async def upload_codebase(file: UploadFile = File(...)):
                 # Avoid relative paths pointing outside target
                 norm_path = os.path.normpath(member)
                 if norm_path.startswith("..") or os.path.isabs(norm_path):
-                    if os.path.exists(temp_zip_path):
-                        os.remove(temp_zip_path)
-                    return error_response(400, f"Path traversal detected in ZIP: {member}")
+                    is_path_traversal = True
+                    invalid_member = member
+                    break
 
-            # Recreate target directory cleanly to ensure isolation
-            if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
-                shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
-            os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
+            if not is_path_traversal:
+                # Recreate target directory cleanly to ensure isolation
+                if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
+                    shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
+                os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
 
-            # Extract the ZIP
-            zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
+                # Extract the ZIP
+                zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
     except Exception as e:
         logger.error("Error during ZIP validation/extraction: %s", e)
         if os.path.exists(temp_zip_path):
-            os.remove(temp_zip_path)
+            try:
+                os.remove(temp_zip_path)
+            except Exception:
+                pass
         return error_response(500, f"Failed to process ZIP archive: {e}")
 
     # Clean up temp file
     if os.path.exists(temp_zip_path):
         os.remove(temp_zip_path)
+
+    if is_path_traversal:
+        return error_response(400, f"Path traversal detected in ZIP: {invalid_member}")
 
     # Validate that extracted directory has supported files (.py, .md)
     has_supported_file = False

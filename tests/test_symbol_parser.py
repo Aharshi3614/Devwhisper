@@ -2,6 +2,8 @@
 
 import tempfile
 import os
+import sys
+import pytest
 
 from symbol_parser import (
     extract_symbols_from_source,
@@ -139,6 +141,7 @@ def test_returns_empty_for_missing_file():
     assert extract_symbols_from_file("/nonexistent/path/file.py") == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not support disabling read permissions via chmod")
 def test_returns_empty_for_unreadable_file(tmp_path):
     bad = tmp_path / "unreadable.py"
     bad.write_text("def foo(): pass")
