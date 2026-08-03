@@ -134,22 +134,12 @@ def queue_worker():
                 if job["type"] == "upload":
                     temp_zip_path = job["temp_zip_path"]
 
-                    # Check Zip Slip path traversal
-                    is_path_traversal = False
-                    invalid_member = ""
-                    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-                        for member in zip_ref.namelist():
-                            norm_path = os.path.normpath(member)
-                            if norm_path.startswith("..") or os.path.isabs(norm_path):
-                                is_path_traversal = True
-                                invalid_member = member
-                                break
+                    if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
+                        shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
+                    os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
 
-                        if not is_path_traversal:
-                            if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
-                                shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
-                            os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
-                            zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
+                    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+                        zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
 
                     # Clean up temp file
                     if os.path.exists(temp_zip_path):
@@ -157,24 +147,6 @@ def queue_worker():
                             os.remove(temp_zip_path)
                         except Exception:
                             pass
-
-                    if is_path_traversal:
-                        raise Exception(f"Path traversal detected in ZIP: {invalid_member}")
-
-                    # Validate extracted files
-                    has_supported_file = False
-                    for root, dirs, files in os.walk(SAMPLE_CODEBASE_DIRECTORY):
-                        for f in files:
-                            if f.endswith((".py", ".md")):
-                                has_supported_file = True
-                                break
-                        if has_supported_file:
-                            break
-
-                    if not has_supported_file:
-                        if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
-                            shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
-                        raise Exception("No supported files (.py, .md) found in the uploaded ZIP archive.")
 
                 # Run the actual indexing pipeline
                 index_directory(SAMPLE_CODEBASE_DIRECTORY)
@@ -617,6 +589,8 @@ def start_indexing():
     """
     Queue codebase indexing.
     """
+    if progress_state.get("running"):
+        return error_response(409, "Indexing is already in progress.")
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
@@ -657,6 +631,35 @@ async def upload_codebase(file: UploadFile = File(...)):
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
         return error_response(400, "Invalid ZIP archive.")
+
+    # Validate path traversal (Zip Slip) synchronously
+    is_path_traversal = False
+    invalid_member = ""
+    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+        for member in zip_ref.namelist():
+            norm_path = os.path.normpath(member)
+            if norm_path.startswith("..") or os.path.isabs(norm_path):
+                is_path_traversal = True
+                invalid_member = member
+                break
+
+    if is_path_traversal:
+        if os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
+        return error_response(400, f"Path traversal detected in ZIP: {invalid_member}")
+
+    # Validate that ZIP contains supported files (.py, .md) synchronously
+    has_supported_file = False
+    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+        for member in zip_ref.namelist():
+            if not member.endswith("/") and member.lower().endswith((".py", ".md")):
+                has_supported_file = True
+                break
+
+    if not has_supported_file:
+        if os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
+        return error_response(400, "No supported files (.py, .md) found in the uploaded ZIP archive.")
 
     # Queue the job
     job = {
