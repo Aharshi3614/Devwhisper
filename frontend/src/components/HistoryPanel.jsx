@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import MicButton from './MicButton.jsx'
+import Markdown from './Markdown.jsx'
 import './HistoryPanel.css'
 
 const POLL_INTERVAL = 3000 // 3 seconds
@@ -63,52 +64,7 @@ function formatRelativeTime(ts) {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-// A tiny markdown formatter (inline code + fenced code blocks). Uses the same
-// CSS classes as the home response output so history renders consistently.
-function Markdown({ text }) {
-  if (!text) return null
 
-  // If we have an unclosed code block (odd number of ```), close it so the
-  // block renders correctly while streaming.
-  const occurrences = (text.match(/```/g) || []).length
-  const isUnclosed = occurrences % 2 !== 0
-
-  let parsedText = text
-  if (isUnclosed) {
-    parsedText += '\n```'
-  }
-
-  const parts = parsedText.split(/(```[\s\S]*?```)/g)
-  return parts.map((part, index) => {
-    if (part.startsWith('```')) {
-      const match = part.match(/```(\w*)\n([\s\S]*?)```/)
-      const language = match ? match[1] : ''
-      const code = match ? match[2] : part.slice(3, -3)
-      return (
-        <pre key={index} className="code-block">
-          {language && <span className="code-lang">{language}</span>}
-          <code>{code.trim()}</code>
-        </pre>
-      )
-    }
-
-    const inlineParts = part.split(/(`[^`\n]+`)/g)
-    return (
-      <span key={index}>
-        {inlineParts.map((subPart, subIndex) => {
-          if (subPart.startsWith('`') && subPart.endsWith('`')) {
-            return (
-              <code key={subIndex} className="inline-code">
-                {subPart.slice(1, -1)}
-              </code>
-            )
-          }
-          return subPart
-        })}
-      </span>
-    )
-  })
-}
 
 function HistoryPanel() {
   const [searchParams, setSearchParams] = useSearchParams()

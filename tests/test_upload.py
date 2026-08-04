@@ -93,7 +93,7 @@ def test_upload_rejects_no_supported_files(client):
 
 
 def test_upload_success_starts_indexing(client):
-    """A valid ZIP upload extracts files and triggers background indexing thread."""
+    """A valid ZIP upload queues the codebase indexing job."""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zip_file:
         zip_file.writestr("app/main.py", "def my_func(): pass")
@@ -101,15 +101,19 @@ def test_upload_success_starts_indexing(client):
 
     zip_buffer.seek(0)
     
-    with patch("main.threading.Thread") as mock_thread:
-        mock_thread.return_value.start.return_value = None
-        response = client.post(
-            "/index/upload",
-            files={"file": ("codebase.zip", zip_buffer.read(), "application/zip")}
-        )
+    response = client.post(
+        "/index/upload",
+        files={"file": ("codebase.zip", zip_buffer.read(), "application/zip")}
+    )
         
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "started"
-    assert "ZIP file uploaded and extracted successfully" in body["message"]
-    mock_thread.assert_called_once()
+    assert "ZIP file uploaded successfully. Indexing job queued." in body["message"]
+    assert "job_id" in body
+
+    from main import jobs_history
+    job = next((j for j in jobs_history if j["id"] == body["job_id"]), None)
+    assert job is not None
+    assert job["type"] == "upload"
+    assert job["status"] in ("pending", "running", "completed", "failed")
