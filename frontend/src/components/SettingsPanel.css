@@ -517,3 +517,96 @@ body.dark .status-running, body.theme-dark .status-running, [data-theme='dark'] 
 body.dark .status-done, body.theme-dark .status-done, [data-theme='dark'] .status-done { color: #69db7c; }
 body.dark .status-error, body.theme-dark .status-error, [data-theme='dark'] .status-error { color: #ff6b6b; }
 body.dark .status-idle, body.theme-dark .status-idle, [data-theme='dark'] .status-idle { color: #a9e34b; }
+
+/* --- Indexing Queue --- */
+.indexing-queue-container {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.queue-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-h);
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.queue-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background-color: var(--code-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.queue-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.job-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-h);
+  word-break: break-all;
+}
+
+.job-status-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+
+.job-status-tag.status-pending {
+  background-color: rgba(107, 114, 128, 0.15);
+  color: #6b7280;
+}
+
+.job-status-tag.status-running {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+.job-status-tag.status-completed {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.job-status-tag.status-failed {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.queue-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.job-error {
+  color: #ef4444;
+}
+
+.job-success {
+  color: #10b981;
+}
