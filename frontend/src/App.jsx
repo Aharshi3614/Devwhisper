@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom'
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
-import ThemeToggle from './components/ThemeToggle.jsx'
 import MicButton from './components/MicButton.jsx'
 import './App.css'
 import SettingsPanel from './components/SettingsPanel.jsx'
@@ -14,6 +13,7 @@ function Home() {
   const [error, setError] = useState(null)
   const [isListening, setIsListening] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
+  const [countdown, setCountdown] = useState(null)
   const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
   const [reindexRecommended, setReindexRecommended] = useState(false)
 
@@ -22,6 +22,18 @@ function Home() {
   const abortControllerRef = useRef(null)
   const mockTimerRef = useRef(null)
   const latestTranscriptRef = useRef('')
+  const countdownIntervalRef = useRef(null)
+
+  // Retrieve or generate a stable session ID so query history shows up in history panel
+  const [hasStarted, setHasStarted] = useState(false)
+
+  const SUGGESTED_PROMPTS = [
+    "What does the preprocess function do?",
+    "Where is the model saved after training?",
+    "How do I debug a KeyError in the pipeline?",
+    "What functions are defined in main.py?"
+  ]
+
   const submitQueryTextRef = useRef(null)
   const redirectedRef = useRef(false)
 
@@ -47,6 +59,32 @@ function Home() {
     return newId
   })
 
+  const getRecordingTimeout = () =>
+    parseInt(localStorage.getItem('devwhisper_recording_timeout') || '30', 10)
+
+  const stopCountdown = useCallback(() => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+      countdownIntervalRef.current = null
+    }
+    setCountdown(null)
+  }, [])
+
+  const startCountdown = useCallback((seconds, onExpire) => {
+    setCountdown(seconds)
+    let remaining = seconds
+    countdownIntervalRef.current = setInterval(() => {
+      remaining -= 1
+      if (isMountedRef.current) setCountdown(remaining)
+      if (remaining <= 0) {
+        clearInterval(countdownIntervalRef.current)
+        countdownIntervalRef.current = null
+        onExpire()
+      }
+    }, 1000)
+  }, [])
+
+  // Clear conversation handler
   const handleClearChat = async () => {
     if (loading) return
 
@@ -273,6 +311,7 @@ function Home() {
       rec.onerror = (err) => {
         console.error('Speech Recognition Error:', err)
         if (isMountedRef.current) {
+          stopCountdown()
           setIsListening(false)
           if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
             setError('Microphone permission denied. Please allow mic access in your browser.')
@@ -288,6 +327,7 @@ function Home() {
 
       rec.onend = () => {
         if (isMountedRef.current) {
+          stopCountdown()
           setIsListening(false)
           const finalQuery = latestTranscriptRef.current.trim()
           if (finalQuery) {
@@ -306,6 +346,8 @@ function Home() {
         recognitionRef.current.abort()
       }
 
+      stopCountdown()
+
       if (mockTimerRef.current) {
         clearTimeout(mockTimerRef.current)
         mockTimerRef.current = null
@@ -315,11 +357,12 @@ function Home() {
         abortControllerRef.current.abort()
       }
     }
-  }, [])
+  }, [submitQueryText, stopCountdown])
 
   const handleMicClick = () => {
     if (speechSupported && recognitionRef.current) {
       if (isListening) {
+        stopCountdown()
         recognitionRef.current.stop()
       } else {
         setQueryText('')
@@ -327,6 +370,9 @@ function Home() {
         setError(null)
         try {
           recognitionRef.current.start()
+          startCountdown(getRecordingTimeout(), () => {
+            if (recognitionRef.current) recognitionRef.current.stop()
+          })
         } catch (err) {
           console.error('Failed to start speech recognition:', err)
           setError('Failed to activate microphone. Please try again.')
@@ -336,6 +382,7 @@ function Home() {
       // Mock Fallback for browsers/environments without SpeechRecognition
       if (isListening) {
         setIsListening(false)
+        stopCountdown()
         if (mockTimerRef.current) {
           clearTimeout(mockTimerRef.current)
           mockTimerRef.current = null
@@ -344,18 +391,26 @@ function Home() {
         setIsListening(true)
         setQueryText('Listening...')
         setError(null)
-        if (mockTimerRef.current) {
-          clearTimeout(mockTimerRef.current)
-        }
-        mockTimerRef.current = setTimeout(() => {
+        const timeout = getRecordingTimeout()
+        startCountdown(timeout, () => {
           if (isMountedRef.current) {
             setIsListening(false)
             const sampleQuery = 'In main.py, what functions are found?'
             setQueryText(sampleQuery)
             submitQueryText(sampleQuery)
+          }
+        })
+        if (mockTimerRef.current) clearTimeout(mockTimerRef.current)
+        mockTimerRef.current = setTimeout(() => {
+          if (isMountedRef.current) {
+            setIsListening(false)
+            stopCountdown()
+            const sampleQuery = 'In main.py, what functions are found?'
+            setQueryText(sampleQuery)
+            submitQueryText(sampleQuery)
             mockTimerRef.current = null
           }
-        }, 3000)
+        }, timeout * 1000)
       }
     }
   }
@@ -397,6 +452,7 @@ function Home() {
                   isListening={isListening} 
                   onClick={handleMicClick}
                   disabled={loading}
+                  countdown={countdown}
                 />
                 <div className="voice-status-info">
                   <span className={`status-dot ${isListening ? 'listening' : 'ready'}`}></span>

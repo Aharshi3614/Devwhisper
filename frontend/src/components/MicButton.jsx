@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import './MicButton.css'
 
-export default function MicButton({ isListening, onClick, disabled }) {
+export default function MicButton({ isListening, onClick, disabled, countdown }) {
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Check if Ctrl + Space or Cmd + Space is pressed
@@ -46,6 +46,9 @@ export default function MicButton({ isListening, onClick, disabled }) {
             <span className="pulse-ring-glow ring-2"></span>
             <span className="pulse-ring-glow ring-3"></span>
           </>
+        )}
+        {isListening && countdown !== null && (
+          <span className="mic-countdown" aria-live="polite">{countdown}s</span>
         )}
       </button>
       <span className="mic-shortcut-hint">Ctrl + Space</span>

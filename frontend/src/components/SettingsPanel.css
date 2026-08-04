@@ -135,6 +135,25 @@
   cursor: pointer;
 }
 
+.setting-number-input {
+  width: 60px;
+  padding: 4px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  font-size: 0.9rem;
+  text-align: center;
+  background: var(--bg-surface, #fff);
+  color: inherit;
+}
+
+body.dark .setting-number-input,
+body.theme-dark .setting-number-input,
+[data-theme='dark'] .setting-number-input {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #f1f1f1;
+}
+
 .shortcuts-list {
   margin: 4px 0 0 0;
   padding-left: 20px;
