@@ -11,7 +11,7 @@ The fused results are formatted into a structured context string suitable for
 LLM consumption, including file paths, symbol names, line numbers, and docstrings.
 
 Key components:
-  - retrieve(): Main entry point — hybrid search + context formatting.
+  - retrieve(): Main entry point — hybrid search + context formatting across single or multiple repositories.
   - preprocess_query(): Normalize user queries before embedding/search.
   - _keyword_search(): BM25-based keyword retrieval.
   - _extract_symbols(): Heuristic symbol extraction from natural language queries.
@@ -117,19 +117,27 @@ def _matches_metadata_filter(payload: dict, metadata_filter: dict | None) -> boo
     return True
 
 
-def _build_qdrant_filter(metadata_filter: dict | None):
-    """Convert key-value dictionary metadata filters to a Qdrant Filter object."""
-    if not metadata_filter:
-        return None
-
+def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[str] | None = None):
+    """Convert key-value dictionary metadata filters and repository choices to a Qdrant Filter object."""
     conditions = []
-    for key, value in metadata_filter.items():
+    if metadata_filter:
+        for key, value in metadata_filter.items():
+            conditions.append(
+                vector_store.qdrant_models.FieldCondition(
+                    key=key,
+                    match=vector_store.qdrant_models.MatchValue(value=value),
+                )
+            )
+    
+    if repository_names:
+        # Support filtering by repository field in payload if multiple repos are provided
         conditions.append(
             vector_store.qdrant_models.FieldCondition(
-                key=key,
-                match=vector_store.qdrant_models.MatchValue(value=value),
+                key="repository",
+                match=vector_store.qdrant_models.MatchAny(any=repository_names),
             )
         )
+
     return vector_store.qdrant_models.Filter(must=conditions) if conditions else None
 
 
@@ -137,8 +145,9 @@ def _keyword_search(
     query: str,
     top_k: int = HYBRID_TOP_K,
     metadata_filter: dict | None = None,
+    repository_names: list[str] | None = None,
 ) -> list[dict]:
-    """BM25 keyword search filtered by metadata. Returns chunks with 'bm25_score' and unique '_idx'."""
+    """BM25 keyword search filtered by metadata and repositories. Returns chunks with 'bm25_score' and unique '_idx'."""
     if _bm25_data is None:
         return []
 
@@ -153,10 +162,16 @@ def _keyword_search(
     for idx in top_indices:
         if scores[idx] > 0:
             chunk = _bm25_data["chunks"][idx].copy()
-            if _matches_metadata_filter(chunk, metadata_filter):
-                chunk["bm25_score"] = float(scores[idx])
-                chunk["_idx"] = idx
-                results.append(chunk)
+            # Apply metadata filter
+            if not _matches_metadata_filter(chunk, metadata_filter):
+                continue
+            # Apply repository filter if specified
+            if repository_names and chunk.get("repository") and chunk.get("repository") not in repository_names:
+                continue
+
+            chunk["bm25_score"] = float(scores[idx])
+            chunk["_idx"] = idx
+            results.append(chunk)
         if len(results) >= top_k:
             break
     return results
@@ -191,12 +206,10 @@ def _exact_symbol_search(
     symbols: list[str],
     top_k: int = HYBRID_TOP_K,
     metadata_filter: dict | None = None,
+    repository_names: list[str] | None = None,
 ) -> list[dict]:
     """
-    Find chunks with exact symbol name matches, filtered by metadata, ranked by match count.
-
-    Symbol chunks (is_symbol=True) are matched by metadata equality first.
-    Line chunks fall back to text substring counting.
+    Find chunks with exact symbol name matches, filtered by metadata and repositories, ranked by match count.
     """
     if not symbols or _bm25_data is None:
         return []
@@ -205,16 +218,17 @@ def _exact_symbol_search(
     for idx, chunk in enumerate(_bm25_data["chunks"]):
         if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
             continue
+        if repository_names and chunk.get("repository") and chunk.get("repository") not in repository_names:
+            continue
+
         chunk_name = chunk.get("symbol_name")
         is_symbol = chunk.get("is_symbol", False)
 
         if is_symbol and chunk_name:
-            # Metadata-level exact match (case-insensitive)
             count = sum(
                 1 for sym in symbols if chunk_name.lower() == sym.lower()
             )
         else:
-            # Fallback: text substring counting
             text_lower = chunk["text"].lower()
             count = sum(text_lower.count(sym.lower()) for sym in symbols)
 
@@ -287,28 +301,21 @@ def retrieve(
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
     metadata_filter: dict | None = None,
+    repositories: list[str] | str | None = None,
 ):
     """
-    Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF.
-
-    Pipeline:
-      1. Preprocess and normalize the query.
-      2. Check embedding version compatibility.
-      3. Encode query → dense vector search in Qdrant.
-      4. BM25 keyword search over indexed chunks.
-      5. Extract symbols from query → exact symbol match search.
-      6. Fuse all non-empty result lists via RRF.
-      7. Format results into structured context for LLM consumption.
+    Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF supporting single or multiple repositories.
 
     Args:
         query: User's natural language or code query.
         top_k: Number of top results to return after fusion.
-        include_sources: If True, also return the list of source filenames.
+        include_sources: If True, also return the list of source files/repositories.
         metadata_filter: Optional key-value filter for metadata-constrained search.
+        repositories: Optional single repository string or list of repository names to search across.
 
     Returns:
         If include_sources is False: formatted context string.
-        If include_sources is True: tuple of (formatted_context, unique_source_files).
+        If include_sources is True: tuple of (formatted_context, unique_sources).
     """
     query = preprocess_query(query)
     if not query:
@@ -316,10 +323,17 @@ def retrieve(
 
     check_embedding_version()
 
+    # Normalize repositories parameter into a list if provided
+    repo_list = None
+    if isinstance(repositories, str):
+        repo_list = [repositories]
+    elif isinstance(repositories, list):
+        repo_list = repositories
+
     # ── Dense vector search (Qdrant) ────────────────────────────────────
     vector = embedder.encode(query).tolist()
     query_limit = HYBRID_TOP_K if _bm25_data is not None else top_k
-    qdrant_filter = _build_qdrant_filter(metadata_filter)
+    qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list)
 
     qdrant_result = vector_store.query_points(
         vector=vector,
@@ -332,10 +346,12 @@ def retrieve(
     vector_chunks = []
     for idx, point in enumerate(qdrant_result):
         payload = point.payload or {}
+        repo_name = payload.get("repository", "")
         vector_chunks.append({
             "_idx": f"v_{idx}",
             "text": payload.get("text", ""),
             "file": payload.get("file", "unknown"),
+            "repository": repo_name,
             "start_line": payload.get("start_line", "?"),
             "end_line": payload.get("end_line"),
             "symbol_name": payload.get("symbol_name"),
@@ -346,11 +362,11 @@ def retrieve(
         })
 
     # ── Sparse keyword search (BM25) ────────────────────────────────────
-    keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter)
+    keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter, repository_names=repo_list)
 
     # ── Exact symbol matching ──────────────────────────────────────────────
     symbols = _extract_symbols(query)
-    symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter)
+    symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter, repository_names=repo_list)
 
     # ── Fuse results ──────────────────────────────────────────────────────
     all_nonempty_chunks = [r for r in [vector_chunks, keyword_chunks, symbol_chunks] if r]
@@ -364,13 +380,15 @@ def retrieve(
     sources = []
     for index, result in enumerate(fused):
         file = result.get("file", "unknown")
+        repo = result.get("repository", "")
         start_line = result.get("start_line", "?")
         code = result.get("text", "")
 
-        if file and file != "unknown":
-            sources.append(file)
+        # Distinct source identification with repository and file path
+        source_label = f"{repo}:{file}" if repo else file
+        if source_label and source_label != "unknown":
+            sources.append(source_label)
 
-        # Determine display name from symbol metadata or fallback regex
         symbol_name = result.get("symbol_name")
         symbol_type = result.get("symbol_type")
         parent_class = result.get("parent_class")
@@ -401,9 +419,10 @@ def retrieve(
         if docstring:
             doc_block = f"Docstring: {docstring}\n"
 
+        repo_tag = f"Repository: {repo}\n" if repo else ""
         structured_context.append(
             f"""Result {index + 1}:
-File: {file}
+{repo_tag}File: {file}
 {entity_label}: {display_name}
 Location: {location}
 {doc_block}Code:
