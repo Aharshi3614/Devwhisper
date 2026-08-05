@@ -147,6 +147,105 @@ You should get a response back confirming the server is live. You can also run t
 
 ---
 
+# 📋 Skipped File Reporting
+
+During indexing, DevWhisper scans the codebase and filters files based on extension, size, and `.gitignore` rules. Files that are not indexed are reported with a specific reason so you can see exactly what was excluded and why.
+
+## Skip Reasons
+
+| Reason | When it applies | `detail` field |
+| --- | --- | --- |
+| `unsupported_extension` | File extension is not in `SUPPORTED_EXTENSIONS` (`.py`, `.md`) | The actual extension (e.g., `.txt`, `.png`) |
+| `oversized` | File exceeds `MAX_FILE_SIZE_MB` (default 1 MB) | e.g., `"2.50 MB exceeds 1.00 MB limit"` |
+| `gitignored` | File matches a `.gitignore` rule | `"matched by .gitignore rule"` |
+| `unreadable` | `os.path.getsize()` raised an `OSError` (permissions, broken symlink) | The OS error message |
+
+---
+
+## Where to See Skip Reports
+
+### 1. Server Logs
+
+Every skipped file is logged at `INFO` level:
+
+```text
+Skipping unsupported file /path/to/notes.txt (extension '.txt' not in ['.md', '.py'])
+Skipping oversized file /path/to/big.py (2.50 MB exceeds 1.00 MB limit)
+Skipping gitignored file /path/to/secret.py
+
+```
+
+### 2. `/index/progress` SSE Stream
+
+The `progress_state` payload includes skipped file details:
+
+```json
+{
+  "skipped": [
+    {
+      "path": "/.../notes.txt",
+      "size_bytes": null,
+      "reason": "unsupported_extension",
+      "detail": ".txt"
+    },
+    {
+      "path": "/.../big.py",
+      "size_bytes": 2621440,
+      "reason": "oversized",
+      "detail": "2.50 MB exceeds 1.00 MB limit"
+    }
+  ],
+  "skipped_count": 2
+}
+
+```
+
+### 3. `.index_cache.json`
+
+The `_metadata.skipped_files` array records all skips from the most recent indexing run, persisted for offline inspection.
+
+---
+
+## Adding Support for a New File Type
+
+Edit `SUPPORTED_EXTENSIONS` in `config.py`:
+
+```python
+SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md", ".txt"})
+
+```
+
+*After updating this configuration, re-index the project so files with the new extension are processed.*
+
+---
+
+## Architecture Documentation Snippet (`docx/architecture.md`)
+
+```markdown
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**SKIP REPORTING (Issue #223)**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+During indexing, files that are not indexed are reported with a reason
+rather than silently dropped. The `collect_indexable_files()` function
+in `indexer.py` returns a `skipped` list of dicts, each containing:
+
+  - `path`       : Absolute path to the skipped file
+  - `size_bytes` : File size in bytes (or `None` if unreadable)
+  - `reason`     : One of `unsupported_extension`, `oversized`,
+                   `gitignored`, `unreadable`
+  - `detail`     : Human-readable context (the extension, the size
+                   limit violation, the error message, etc.)
+
+Every skip is also logged at `INFO` level via the application logger,
+and the full `skipped` list is surfaced through the `/index/progress`
+SSE stream and persisted in `.index_cache.json` under
+`_metadata.skipped_files`.
+
+```
+
 ## 🐳 Run with Docker
 
 1. Build the image:
