@@ -10,6 +10,9 @@ Both formatters include timestamp, log level, logger name, filename, line number
 function name, and the log message. JSONFormatter additionally captures custom
 extra fields and exception tracebacks.
 
+Issue #225: Both formatters now include the ``request_id`` field when present
+in the LogRecord (set by the RequestIDMiddleware via ``extra={"request_id": ...}``).
+
 Usage:
     from logger import logger
     logger.info("Server started")
@@ -29,6 +32,8 @@ class JSONFormatter(logging.Formatter):
     Includes standard LogRecord fields plus any custom extra fields passed
     via logger calls (e.g., logger.info("msg", extra={"user_id": 42})).
     Exception tracebacks are serialized as structured data.
+
+    Issue #225: Also includes ``request_id`` when present in the LogRecord.
     """
 
     # Standard attributes of LogRecord to exclude from custom extra fields
@@ -59,13 +64,18 @@ class JSONFormatter(logging.Formatter):
             "function": record.funcName,
         }
 
+        # Issue #225: Include request_id in every log line when set
+        request_id = getattr(record, 'request_id', None)
+        if request_id:
+            log_record["request_id"] = request_id
+
         # Serialize exception details if present
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
 
         # Serialize custom extra fields passed in logger calls (e.g. logger.info("msg", extra={...}))
         for key, val in record.__dict__.items():
-            if key not in self.STANDARD_ATTRIBUTES and not key.startswith('_'):
+            if key not in self.STANDARD_ATTRIBUTES and not key.startswith('_') and key != 'request_id':
                 log_record[key] = val
 
         return json.dumps(log_record)
@@ -77,6 +87,8 @@ class ColorfulFormatter(logging.Formatter):
 
     Useful for local development readability. Each log level gets a distinct
     color: DEBUG (grey), INFO (green), WARNING (yellow), ERROR (red), CRITICAL (bold red).
+
+    Issue #225: Also includes ``[req:xxxx]`` prefix when a request_id is present.
     """
 
     GREY = "\x1b[38;20m"
@@ -106,7 +118,14 @@ class ColorfulFormatter(logging.Formatter):
         """
         log_fmt = self.FORMATS.get(record.levelno, self.FORMATS[logging.INFO])
         formatter = logging.Formatter(log_fmt)
-        return formatter.format(record)
+        base = formatter.format(record)
+
+        # Issue #225: prepend request_id if present
+        request_id = getattr(record, 'request_id', None)
+        if request_id:
+            base = f"[req:{request_id}] {base}"
+
+        return base
 
 
 def setup_logging() -> None:
