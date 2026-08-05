@@ -1,29 +1,19 @@
 """
-handlers.py — Command routing and special-case handling for DevWhisper queries.
+handlers.py — Command routing and request processing pipeline for DevWhisper.
 
-This module provides a lightweight command router that intercepts specific
-user queries before they reach the standard retrieval + LLM pipeline. It is
-useful for handling:
-
-    - Built-in commands (e.g., "help", "reset", "status")
-    - Administrative operations
-    - Shortcut responses that don't require LLM generation
-
-The route_command() function is called by the webhook handler in main.py
-before falling back to the full retrieval pipeline.
-
-Usage:
-    from handlers import route_command
-    answer = route_command(query, session_id)
-    if answer:
-        # Use the routed response directly
-        ...
-    else:
-        # Fall back to retrieval + LLM
-        ...
+This module provides command routing and an explicit, modular request processing
+pipeline to handle query execution stages:
+    1. Validation
+    2. Cache lookup
+    3. Retrieval (hybrid search)
+    4. Command routing / LLM generation
+    5. Cache insertion & session memory update
 """
 
 from logger import logger
+from cache import get as cache_get, put as cache_put
+from retriever import retrieve
+from llm import generate_response
 
 
 def route_command(query: str, session_id: str) -> str | None:
@@ -33,14 +23,6 @@ def route_command(query: str, session_id: str) -> str | None:
     Checks the normalized query against known command patterns. If matched,
     returns a direct response string bypassing the retrieval + LLM pipeline.
     If no match, returns None so the caller can fall back to standard processing.
-
-    Args:
-        query: The user's natural language query string.
-        session_id: The current conversation session ID.
-
-    Returns:
-        A direct response string if the query matches a known command,
-        or None to indicate no routing match.
     """
     normalized = query.strip().lower()
 
@@ -59,4 +41,51 @@ def route_command(query: str, session_id: str) -> str | None:
 
     # No match — fall back to standard retrieval + LLM pipeline
     return None
-  
+
+
+def process_query_pipeline(query: str, session_id: str, memory_getter, memory_updater, repositories=None) -> tuple[str, list[str]]:
+    """
+    Execute the explicit request processing pipeline stages:
+        Stage 1: Cache Lookup
+        Stage 2: Retrieval (Hybrid Search)
+        Stage 3: Command Routing or LLM Generation
+        Stage 4: Post-processing & Attribution
+        Stage 5: Cache Insertion & Memory Update
+
+    Args:
+        query: User query string.
+        session_id: Active session identifier.
+        memory_getter: Callable to fetch conversation history.
+        memory_updater: Callable to update session history.
+        repositories: Optional repository selection list.
+
+    Returns:
+        Tuple of (final_answer_string, list_of_sources).
+    """
+    # Stage 1: Cache Lookup
+    cached = cache_get(query)
+    if cached is not None:
+        memory_updater(session_id, query, cached)
+        logger.info("Cache hit for query: %s", query)
+        return cached, []
+
+    # Stage 2: Retrieval
+    context, sources = retrieve(query, include_sources=True, repositories=repositories)
+    history = memory_getter(session_id)
+
+    # Stage 3: Command Routing / LLM Generation
+    answer = route_command(query, session_id)
+    if not answer:
+        answer = generate_response(query, context, history)
+
+    # Stage 4: Post-processing & Source Attribution
+    if answer and answer.strip() and sources:
+        answer += "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
+
+    # Stage 5: Cache Insertion & Memory Update
+    if answer and answer.strip():
+        cache_put(query, answer)
+    
+    memory_updater(session_id, query, answer)
+
+    return answer, sources
