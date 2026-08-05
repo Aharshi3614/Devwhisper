@@ -94,6 +94,12 @@ def test_collect_keeps_file_at_exact_limit():
 
 
 def test_collect_filters_unsupported_extensions():
+    """Unsupported-extension files are excluded from indexing AND reported.
+
+    Issue #223: previously these files were silently dropped. They are now
+    recorded in the ``skipped`` list with reason ``unsupported_extension``
+    so operators can see exactly what was excluded and why.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         py_path = os.path.join(tmpdir, "good.py")
         txt_path = os.path.join(tmpdir, "bad.txt")
@@ -106,7 +112,12 @@ def test_collect_filters_unsupported_extensions():
 
         assert py_path in files
         assert txt_path not in files
-        assert len(skipped) == 0
+        # The .txt file must now appear in the skipped list with the
+        # correct reason and a human-readable detail field.
+        assert len(skipped) == 1
+        assert skipped[0]["path"] == txt_path
+        assert skipped[0]["reason"] == "unsupported_extension"
+        assert skipped[0]["detail"] == ".txt"
 
 
 def test_collect_config_default():
