@@ -132,28 +132,62 @@ def collect_indexable_files(
             if file == ".gitignore":
                 continue  # .gitignore files are never indexed
 
-            if os.path.splitext(file)[1].lower() not in SUPPORTED_EXTENSIONS:
+            ext = os.path.splitext(file)[1].lower()
+            if ext not in SUPPORTED_EXTENSIONS:
+                path = os.path.join(root, file)
+                logger.info(
+                    "Skipping unsupported file %s (extension %r not in %s)",
+                    path,
+                    ext,
+                    sorted(SUPPORTED_EXTENSIONS),
+                )
+                skipped.append({
+                    "path": path,
+                    "size_bytes": None,
+                    "reason": "unsupported_extension",
+                    "detail": ext if ext else "(no extension)",
+                })
                 continue
 
             path = os.path.join(root, file)
             if _is_gitignored(path, rules):
                 logger.info("Skipping gitignored file %s", path)
-                skipped.append({"path": path, "size_bytes": None, "reason": "gitignored"})
+                skipped.append({
+                    "path": path,
+                    "size_bytes": None,
+                    "reason": "gitignored",
+                    "detail": "matched by .gitignore rule",
+                })
                 continue
 
             try:
                 size = os.path.getsize(path)
             except OSError as exc:
                 logger.warning("Skipping unreadable file %s: %s", path, exc)
-                skipped.append({"path": path, "size_bytes": None, "reason": "unreadable"})
+                skipped.append({
+                    "path": path,
+                    "size_bytes": None,
+                    "reason": "unreadable",
+                    "detail": str(exc),
+                })
                 continue
 
             if size > limit:
                 logger.warning(
                     "Skipping oversized file %s (%.2f MB exceeds %.2f MB limit)",
-                    path, size / (1024 * 1024), limit / (1024 * 1024),
+                    path,
+                    size / (1024 * 1024),
+                    limit / (1024 * 1024),
                 )
-                skipped.append({"path": path, "size_bytes": size, "reason": "oversized"})
+                skipped.append({
+                    "path": path,
+                    "size_bytes": size,
+                    "reason": "oversized",
+                    "detail": (
+                        f"{size / (1024 * 1024):.2f} MB exceeds "
+                        f"{limit / (1024 * 1024):.2f} MB limit"
+                    ),
+                })
                 continue
 
             files_to_index.append(path)
