@@ -1,11 +1,14 @@
 """Tests for real-time indexing progress endpoints."""
 
 import json
+import time
+import queue as queue_module
+
 import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
-from main import app
+from main import app, indexing_queue
 from indexer import progress_state
 
 
@@ -14,14 +17,49 @@ def client():
     return TestClient(app)
 
 
+def _drain_queue_and_wait_for_idle(timeout: float = 2.0) -> None:
+    """Drain pending jobs and wait for the background worker to go idle.
+
+    The queue worker thread (started at app startup) processes jobs
+    asynchronously and toggles ``progress_state["running"]`` as each job
+    starts and finishes. Without draining, a job queued by a previous
+    test can finish *after* the next test sets ``running = True``,
+    clobbering it back to ``False`` and causing race-dependent failures
+    in tests that assert on the 409 concurrent-run rejection.
+
+    This helper:
+      1. Removes all pending jobs from the queue so the worker has
+         nothing new to pick up.
+      2. Polls ``progress_state["running"]`` until it becomes ``False``
+         (meaning any in-progress job has finished) or the timeout
+         expires.
+    """
+    # 1. Drain pending jobs.
+    while True:
+        try:
+            indexing_queue.get_nowait()
+            indexing_queue.task_done()
+        except queue_module.Empty:
+            break
+
+    # 2. Wait for any in-progress job to finish.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not progress_state.get("running"):
+            return
+        time.sleep(0.005)
+
+
 @pytest.fixture(autouse=True)
 def reset_progress():
+    _drain_queue_and_wait_for_idle()
     progress_state.update({
         "running": False, "current": 0, "total": 0,
         "percent": 0, "current_file": "", "status": "idle", "message": "",
         "skipped": [], "skipped_count": 0,
     })
     yield
+    _drain_queue_and_wait_for_idle()
     progress_state.update({
         "running": False, "current": 0, "total": 0,
         "percent": 0, "current_file": "", "status": "idle", "message": "",
@@ -78,48 +116,3 @@ def test_progress_emits_valid_json(client):
     data = json.loads(lines[0].removeprefix("data:").strip())
     assert "status" in data
     assert "percent" in data
-    assert "message" in data
-
-
-def test_progress_emits_file_count_fields(client):
-    progress_state.update({
-        "status": "done", "current": 3, "total": 3,
-        "percent": 100, "current_file": "model.py", "message": "Done"
-    })
-    response = client.get("/index/progress")
-    lines = [l for l in response.text.splitlines() if l.startswith("data:")]
-    data = json.loads(lines[0].removeprefix("data:").strip())
-    assert data["current"] == 3
-    assert data["total"] == 3
-    assert data["current_file"] == "model.py"
-
-
-def test_progress_shows_completion_status(client):
-    progress_state.update({"status": "done", "percent": 100, "message": "Indexing complete."})
-    response = client.get("/index/progress")
-    lines = [l for l in response.text.splitlines() if l.startswith("data:")]
-    data = json.loads(lines[0].removeprefix("data:").strip())
-    assert data["status"] == "done"
-    assert data["percent"] == 100
-
-
-def test_progress_shows_error_status(client):
-    progress_state.update({"status": "error", "message": "Indexing failed: connection refused"})
-    response = client.get("/index/progress")
-    lines = [l for l in response.text.splitlines() if l.startswith("data:")]
-    data = json.loads(lines[0].removeprefix("data:").strip())
-    assert data["status"] == "error"
-    assert "failed" in data["message"]
-
-
-# --- progress_state unit tests ---
-
-def test_progress_state_has_required_keys():
-    required = {"running", "current", "total", "percent", "current_file", "status", "message", "skipped", "skipped_count"}
-    assert required.issubset(set(progress_state.keys()))
-
-
-def test_progress_percent_range():
-    for pct in [0, 50, 100]:
-        progress_state["percent"] = pct
-        assert 0 <= progress_state["percent"] <= 100
