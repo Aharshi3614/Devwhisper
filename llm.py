@@ -163,6 +163,18 @@ Conversation history:
         )
 
         if response.choices:
+            # Capture and log token usage statistics if available
+            if hasattr(response, "usage") and response.usage:
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+                logger.info(
+                    "Token Usage - Prompt: %d, Completion: %d, Total: %d",
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                )
+
             return response.choices[0].message.content
 
         logger.error("Unexpected response: %s", response)

@@ -341,12 +341,8 @@ async def vapi_webhook(request: Request):
                         return error_response(400, "Query parameter is required and cannot be empty.")
 
                     # ── Cache lookup ──────────────────────────────────────
-                    # Attempt to serve the response from cache. This skips
-                    # retrieval and LLM generation entirely on a hit.
                     cached = cache_get(query)
                     if cached is not None:
-                        # Still update conversation memory on cache hit so
-                        # the session history stays consistent.
                         update_memory(session_id, query, cached)
                         results.append({
                             "toolCallId": tool.get("id", "single"),
@@ -363,7 +359,6 @@ async def vapi_webhook(request: Request):
                         answer += "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
 
                     # ── Cache insertion ─────────────────────────────────
-                    # Only cache successful, non-empty responses.
                     if answer and answer.strip():
                         cache_put(query, answer)
 
@@ -720,7 +715,7 @@ def get_history(session_id: str | None = None):
     """
     Retrieve conversation history.
 
-    - GET /history              → returns all active session IDs.
+    - GET /history            → returns all active session IDs.
     - GET /history?session_id=xxx → returns history for that specific session.
 
     Args:
@@ -883,4 +878,3 @@ def get_index_suggestions():
     selected_suggestions = unique_suggestions[:4]
 
     return {"suggestions": selected_suggestions}
-
