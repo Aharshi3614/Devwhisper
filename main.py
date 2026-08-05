@@ -30,16 +30,18 @@ Security:
 from fastapi import FastAPI, Request, Header, HTTPException, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata
 from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
-from logger import logger
 from errors import error_response
 from indexer import index_directory, progress_state, get_before_cache_data, collect_indexable_files, \
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
 from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
+import contextvars
+import logging
 import queue
 import uuid
 import json
@@ -59,6 +61,54 @@ app = FastAPI(
     description="Voice-native developer experience agent — webhook server and query API.",
     version="1.0.0",
 )
+
+# ---------------------------------------------------------------------------
+# Issue #225: Request Correlation IDs
+# ---------------------------------------------------------------------------
+request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "request_id", default=None
+)
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Generate a unique request ID for every incoming request (issue #225).
+
+    - Checks for an ``X-Request-ID`` header (set by upstream proxies).
+    - Otherwise generates a new UUID4.
+    - Stores it in the ``request_id_var`` contextvar so all log calls
+      within the request scope automatically include it.
+    - Adds it to the response headers as ``X-Request-ID``.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        token = request_id_var.set(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+app.add_middleware(RequestIDMiddleware)
+
+
+class RequestIDLoggerAdapter(logging.LoggerAdapter):
+    """Logger adapter that automatically injects the request_id from the
+    contextvar into every log call's extra fields (issue #225)."""
+
+    def process(self, msg, kwargs):
+        rid = request_id_var.get(None)
+        if rid is not None:
+            extra = kwargs.get("extra", {})
+            if "request_id" not in extra:
+                extra["request_id"] = rid
+            kwargs["extra"] = extra
+        return msg, kwargs
+
+
+logger = RequestIDLoggerAdapter(logging.getLogger("devwhisper"), {})
 
 # ---------------------------------------------------------------------------
 # Admin secret (fail-closed security)
