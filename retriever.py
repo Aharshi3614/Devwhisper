@@ -31,6 +31,7 @@ import os
 import pickle
 import re
 
+from qdrant_client import QdrantClient, models as qdrant_models
 from sentence_transformers import SentenceTransformer
 
 import repositories as repo_registry
@@ -83,8 +84,12 @@ def preprocess_query(query: str) -> str:
     if not query:
         return ""
 
+    # 1. Normalize whitespace (collapse redundant tabs, newlines, and multi-spaces)
     query = re.sub(r"\s+", " ", query).strip()
+
+    # 2. Strip leading/trailing enclosing quotes or surrounding redundant punctuation
     query = re.sub(r'^[^\w\s()_.\-]+|[^\w\s()_.\-]+$', "", query).strip()
+
     return query
 
 
@@ -129,8 +134,11 @@ def _matches_metadata_filter(payload: dict, metadata_filter: dict | None) -> boo
     return True
 
 
-def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[str] | None = None):
-    """Convert key-value dictionary metadata filters and repository choices to a Qdrant Filter object."""
+def _build_qdrant_filter(metadata_filter: dict | None) -> qdrant_models.Filter | None:
+    """Convert key-value dictionary metadata filters to a Qdrant Filter object."""
+    if not metadata_filter:
+        return None
+
     conditions = []
     if metadata_filter:
         for key, value in metadata_filter.items():
@@ -144,13 +152,12 @@ def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[st
     if repository_names:
         # Support filtering by repository field in payload if multiple repos are provided
         conditions.append(
-            vector_store.qdrant_models.FieldCondition(
-                key="repository",
-                match=vector_store.qdrant_models.MatchAny(any=repository_names),
+            qdrant_models.FieldCondition(
+                key=key,
+                match=qdrant_models.MatchValue(value=value),
             )
         )
-
-    return vector_store.qdrant_models.Filter(must=conditions) if conditions else None
+    return qdrant_models.Filter(must=conditions) if conditions else None
 
 
 def _keyword_search(
@@ -363,8 +370,10 @@ def retrieve(
     # repository-name filter in shared-collection mode (repo_id is None).
     qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
 
-    qdrant_result = vector_store.query_points(
-        vector=vector,
+    qdrant_result = client.query_points(
+        collection_name=QDRANT_COLLECTION_NAME,
+        query=vector,
+        query_filter=qdrant_filter,
         limit=query_limit,
         query_filter=qdrant_filter,
         collection_name=target_collection,
