@@ -11,6 +11,17 @@
   --shadow:
     rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
 
+  /* Syntax Highlighting Light Theme Tokens */
+  --syntax-keyword: #aa3bff;
+  --syntax-string: #059669;
+  --syntax-comment: #9ca3af;
+  --syntax-number: #d97706;
+  --syntax-function: #2563eb;
+  --syntax-class: #dc2626;
+  --syntax-builtin: #7c3aed;
+  --syntax-operator: #4b5563;
+  --syntax-punctuation: #6b7280;
+
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -43,6 +54,17 @@
   --shadow:
     rgba(0, 0, 0, 0.4) 0 10px 15px -3px,
     rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+
+  /* Syntax Highlighting Dark Theme Tokens */
+  --syntax-keyword: #c084fc;
+  --syntax-string: #34d399;
+  --syntax-comment: #6b7280;
+  --syntax-number: #fbbf24;
+  --syntax-function: #60a5fa;
+  --syntax-class: #f87171;
+  --syntax-builtin: #a78bfa;
+  --syntax-operator: #9ca3af;
+  --syntax-punctuation: #9ca3af;
 }
 
 [data-theme="dark"] #social .button-icon {
@@ -104,4 +126,36 @@ code {
   line-height: 135%;
   padding: 4px 8px;
   background: var(--code-bg);
+}
+
+/* --- Prism Syntax Highlighting Styles --- */
+.code-block .token.keyword {
+  color: var(--syntax-keyword);
+  font-weight: 600;
+}
+.code-block .token.string {
+  color: var(--syntax-string);
+}
+.code-block .token.comment {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+.code-block .token.number,
+.code-block .token.boolean {
+  color: var(--syntax-number);
+}
+.code-block .token.function {
+  color: var(--syntax-function);
+}
+.code-block .token.class-name {
+  color: var(--syntax-class);
+}
+.code-block .token.builtin {
+  color: var(--syntax-builtin);
+}
+.code-block .token.operator {
+  color: var(--syntax-operator);
+}
+.code-block .token.punctuation {
+  color: var(--syntax-punctuation);
 }

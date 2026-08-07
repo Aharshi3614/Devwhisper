@@ -4,7 +4,12 @@ import os
 import tempfile
 
 from config import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB
-from indexer import chunk_file, collect_indexable_files
+from indexer import (
+    chunk_file,
+    collect_indexable_files,
+    get_file_chunks,
+    load_gitignore_rules,
+)
 
 
 def test_supported_extensions_includes_markdown():
@@ -89,6 +94,12 @@ def test_collect_keeps_file_at_exact_limit():
 
 
 def test_collect_filters_unsupported_extensions():
+    """Unsupported-extension files are excluded from indexing AND reported.
+
+    Issue #223: previously these files were silently dropped. They are now
+    recorded in the ``skipped`` list with reason ``unsupported_extension``
+    so operators can see exactly what was excluded and why.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         py_path = os.path.join(tmpdir, "good.py")
         txt_path = os.path.join(tmpdir, "bad.txt")
@@ -101,9 +112,299 @@ def test_collect_filters_unsupported_extensions():
 
         assert py_path in files
         assert txt_path not in files
-        assert len(skipped) == 0
+        # The .txt file must now appear in the skipped list with the
+        # correct reason and a human-readable detail field.
+        assert len(skipped) == 1
+        assert skipped[0]["path"] == txt_path
+        assert skipped[0]["reason"] == "unsupported_extension"
+        assert skipped[0]["detail"] == ".txt"
 
 
 def test_collect_config_default():
     assert MAX_FILE_SIZE_BYTES == MAX_FILE_SIZE_MB * 1024 * 1024
     assert MAX_FILE_SIZE_MB == 1
+
+def test_get_file_chunks_includes_symbols_for_python():
+    """Python files produce both symbol and line chunks."""
+    source = (
+        "def preprocess(data):\n"
+        '    """Clean data."""\n'
+        "    return data.dropna()\n"
+        "\n"
+        "class Model:\n"
+        "    def train(self):\n"
+        "        pass\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(source)
+        tmp_path = f.name
+
+    try:
+        chunks = get_file_chunks(tmp_path, chunk_size=5)
+        sym_chunks = [c for c in chunks if c.get("is_symbol")]
+        line_chunks = [c for c in chunks if not c.get("is_symbol")]
+
+        assert len(sym_chunks) == 3
+        names = {c["symbol_name"] for c in sym_chunks}
+        assert names == {"preprocess", "Model", "train"}
+
+        assert len(line_chunks) > 0
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_get_file_chunks_no_symbols_for_markdown():
+    """Markdown files produce only line chunks."""
+    md = "# Title\n\nSome text.\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write(md)
+        tmp_path = f.name
+
+    try:
+        chunks = get_file_chunks(tmp_path)
+        sym_chunks = [c for c in chunks if c.get("is_symbol")]
+        line_chunks = [c for c in chunks if not c.get("is_symbol")]
+
+        assert sym_chunks == []
+        assert len(line_chunks) > 0
+        assert all(c.get("is_symbol") is False for c in line_chunks)
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_symbol_chunk_has_expected_metadata():
+    """Symbol chunks carry the metadata fields the retriever needs."""
+    source = (
+        'class Processor:\n'
+        '    """Process things."""\n'
+        "\n"
+        "    def run(self):\n"
+        '        """Run it."""\n'
+        "        pass\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(source)
+        tmp_path = f.name
+
+    try:
+        chunks = get_file_chunks(tmp_path)
+        sym = next(c for c in chunks if c.get("symbol_name") == "run")
+        assert sym["symbol_type"] == "method"
+        assert sym["parent_class"] == "Processor"
+        assert sym["docstring"] == "Run it."
+        assert sym["start_line"] == 4
+        assert sym["end_line"] == 6
+        assert sym["is_symbol"] is True
+    finally:
+        os.unlink(tmp_path)
+
+
+# --- .gitignore awareness ---
+
+
+def test_load_gitignore_rules_empty_when_no_gitignore():
+    """A tree without any .gitignore produces no rules."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "main.py"), "w") as f:
+            f.write("x = 1\n")
+        assert load_gitignore_rules(tmpdir) == []
+
+
+def test_collect_respects_gitignore():
+    """Files/directories listed in .gitignore are excluded from indexing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ignored_dir = os.path.join(tmpdir, "ignored")
+        os.makedirs(ignored_dir)
+        with open(os.path.join(tmpdir, "keep.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(ignored_dir, "secret.py"), "w") as f:
+            f.write("secret = 1\n")
+        with open(os.path.join(tmpdir, ".gitignore"), "w") as f:
+            f.write("ignored/\nsecret.py\n")
+
+        rules = load_gitignore_rules(tmpdir)
+        files, skipped = collect_indexable_files(tmpdir, gitignore_rules=rules)
+
+        assert os.path.join(tmpdir, "keep.py") in files
+        assert os.path.join(ignored_dir, "secret.py") not in files
+        assert any(s["reason"] == "gitignored" for s in skipped)
+
+
+def test_collect_respects_nested_gitignore():
+    """A nested .gitignore only affects files under its own directory."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        subdir = os.path.join(tmpdir, "sub")
+        os.makedirs(subdir)
+        with open(os.path.join(tmpdir, "main.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(subdir, "keep.py"), "w") as f:
+            f.write("y = 2\n")
+        with open(os.path.join(subdir, "drop.py"), "w") as f:
+            f.write("z = 3\n")
+        with open(os.path.join(subdir, ".gitignore"), "w") as f:
+            f.write("drop.py\n")
+
+        rules = load_gitignore_rules(tmpdir)
+        files, _ = collect_indexable_files(tmpdir, gitignore_rules=rules)
+
+        assert os.path.join(tmpdir, "main.py") in files
+        assert os.path.join(subdir, "keep.py") in files
+        assert os.path.join(subdir, "drop.py") not in files
+
+
+def test_gitignore_negation_honored():
+    """`!pattern` inside a .gitignore re-includes a previously ignored file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "keep.py"), "w") as f:
+            f.write("keep = 1\n")
+        with open(os.path.join(tmpdir, "other.py"), "w") as f:
+            f.write("other = 1\n")
+        with open(os.path.join(tmpdir, ".gitignore"), "w") as f:
+            f.write("*.py\n!keep.py\n")
+
+        rules = load_gitignore_rules(tmpdir)
+        files, _ = collect_indexable_files(tmpdir, gitignore_rules=rules)
+
+        assert os.path.join(tmpdir, "keep.py") in files
+        assert os.path.join(tmpdir, "other.py") not in files
+
+
+def test_collect_unaffected_without_gitignore_rules():
+    """Passing no rules leaves the existing collection behavior unchanged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.makedirs(os.path.join(tmpdir, "ignored_dir"), exist_ok=True)
+        with open(os.path.join(tmpdir, "good.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(tmpdir, "ignored_dir", "inner.py"), "w") as f:
+            f.write("y = 1\n")
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=1000)
+
+        assert len(files) == 2
+        assert skipped == []
+
+
+
+# --- Unsupported file type reporting (Issue #223) ---
+
+
+def test_collect_skips_unsupported_extension_logs_and_records():
+    """Unsupported files are both logged and recorded in the skipped list."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        unsupported_path = os.path.join(tmpdir, "image.png")
+        with open(unsupported_path, "wb") as f:
+            f.write(b"\x89PNG fake image data")
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=10000)
+
+        assert unsupported_path not in files
+        assert len(skipped) == 1
+        entry = skipped[0]
+        assert entry["path"] == unsupported_path
+        assert entry["reason"] == "unsupported_extension"
+        assert entry["detail"] == ".png"
+        assert entry["size_bytes"] is None
+
+
+def test_collect_records_multiple_unsupported_extensions():
+    """Multiple unsupported files are each recorded separately."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for name in ("a.txt", "b.json", "c.png"):
+            with open(os.path.join(tmpdir, name), "w") as f:
+                f.write("content\n")
+        with open(os.path.join(tmpdir, "good.py"), "w") as f:
+            f.write("x = 1\n")
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=10000)
+
+        assert len(files) == 1  # only good.py
+        assert len(skipped) == 3
+        reasons = {s["reason"] for s in skipped}
+        assert reasons == {"unsupported_extension"}
+        details = {s["detail"] for s in skipped}
+        assert details == {".txt", ".json", ".png"}
+
+
+def test_collect_unsupported_extension_no_extension():
+    """A file with no extension is reported as unsupported with a clear detail."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        no_ext_path = os.path.join(tmpdir, "README")
+        with open(no_ext_path, "w") as f:
+            f.write("just text\n")
+
+        files, skipped = collect_indexable_files(tmpdir, max_bytes=10000)
+
+        assert no_ext_path not in files
+        assert len(skipped) == 1
+        assert skipped[0]["reason"] == "unsupported_extension"
+        assert skipped[0]["detail"] == "(no extension)"
+
+
+def test_collect_skipped_entries_have_consistent_schema():
+    """Every skipped entry has the four required keys: path, size_bytes,
+    reason, detail. Guards against frontend rendering crashes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "good.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(tmpdir, "bad.txt"), "w") as f:
+            f.write("text\n")
+        with open(os.path.join(tmpdir, "big.py"), "w") as f:
+            f.write("x\n" * 200)
+
+        _, skipped = collect_indexable_files(tmpdir, max_bytes=100)
+
+        required_keys = {"path", "size_bytes", "reason", "detail"}
+        for entry in skipped:
+            assert required_keys.issubset(entry.keys()), (
+                f"Entry {entry} is missing keys: "
+                f"{required_keys - set(entry.keys())}"
+            )
+
+
+def test_collect_gitignore_file_itself_is_not_recorded_as_skipped():
+    """A .gitignore file is infrastructure, not user content; it must not
+    appear in the skipped list (it's filtered before the extension check)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, ".gitignore"), "w") as f:
+            f.write("*.txt\n")
+        with open(os.path.join(tmpdir, "good.py"), "w") as f:
+            f.write("x = 1\n")
+
+        _, skipped = collect_indexable_files(tmpdir, max_bytes=10000)
+
+        gitignore_entries = [
+            s for s in skipped
+            if s["path"].endswith(".gitignore")
+        ]
+        assert gitignore_entries == []
+
+
+def test_collect_mixed_skip_reasons_coexist():
+    """A single scan can produce multiple skip reasons; all are recorded."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Supported + small → indexed
+        with open(os.path.join(tmpdir, "good.py"), "w") as f:
+            f.write("x = 1\n")
+        # Unsupported extension → skipped
+        with open(os.path.join(tmpdir, "notes.txt"), "w") as f:
+            f.write("text\n")
+        # Oversized supported file → skipped
+        with open(os.path.join(tmpdir, "big.py"), "w") as f:
+            f.write("x\n" * 200)
+        # Gitignored supported file → skipped
+        with open(os.path.join(tmpdir, "secret.py"), "w") as f:
+            f.write("s = 1\n")
+        with open(os.path.join(tmpdir, ".gitignore"), "w") as f:
+            f.write("secret.py\n")
+
+        rules = load_gitignore_rules(tmpdir)
+        files, skipped = collect_indexable_files(
+            tmpdir, max_bytes=100, gitignore_rules=rules
+        )
+
+        assert os.path.join(tmpdir, "good.py") in files
+        reasons = {s["reason"] for s in skipped}
+        assert "unsupported_extension" in reasons
+        assert "oversized" in reasons
+        assert "gitignored" in reasons
+

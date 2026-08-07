@@ -139,6 +139,23 @@
   }
 }
 
+.mic-countdown {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent, #0066cc);
+  background: var(--bg-surface, #fff);
+  border: 1px solid var(--accent-border, #0066cc);
+  border-radius: 8px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+}
+
 @media (prefers-color-scheme: dark) {
   .mic-button {
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);

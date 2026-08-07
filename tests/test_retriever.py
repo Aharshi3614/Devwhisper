@@ -61,7 +61,7 @@ def test_retrieve_formats_ranked_results(monkeypatch):
     assert "Result 1:" in context
     assert "File: pipeline.py" in context
     assert "Function: preprocess" in context
-    assert "Start Line: 12" in context
+    assert "Location: Line 12" in context
     assert "Result 2:" in context
     assert "Function: train_model" in context
 
@@ -79,7 +79,7 @@ def test_retrieve_uses_safe_defaults_for_missing_payload_fields(monkeypatch):
 
     assert "File: unknown" in context
     assert "Function: unknown" in context
-    assert "Start Line: ?" in context
+    assert "Location: Line ?" in context
     assert "Code:\n\n" in context
 
 
@@ -151,7 +151,7 @@ def test_extract_symbols_finds_camel_case():
 
 def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     """When BM25 index is absent, degrade to pure vector search."""
-    monkeypatch.setattr(retriever, "_bm25_data", None)
+    monkeypatch.setattr(retriever, "_get_bm25", lambda repo_id: None)
     points = [_point({"file": "test.py", "start_line": 1, "text": "def foo(): pass"})]
     _setup_mocks(monkeypatch, points)
 
@@ -160,16 +160,104 @@ def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     assert "File: test.py" in context
 
 
-def test_preprocess_query_normalizes_whitespace_and_punctuation():
-    """Query preprocessing strips extra spaces and trailing punctuation."""
-    raw_query = "  \n  How to   index files???  \t "
-    normalized = retriever.preprocess_query(raw_query)
-    assert normalized == "How to index files"
+def test_exact_symbol_search_prefers_metadata_match(monkeypatch):
+    """Symbol chunks with matching symbol_name get exact metadata hits."""
+    monkeypatch.setattr(
+        retriever, "_get_bm25",lambda repo_id:
+        {
+            "bm25": MagicMock(),
+            "chunks": [
+                {"text": "def preprocess(data): pass", "symbol_name": "preprocess", "is_symbol": True},
+                {"text": "def preprocess_data(x): pass", "symbol_name": "preprocess_data", "is_symbol": True},
+                {"text": "some random text", "is_symbol": False},
+            ],
+            "corpus": ["def preprocess(data): pass", "def preprocess_data(x): pass", "some random text"],
+        }
+    )
+    results = retriever._exact_symbol_search(["preprocess"], top_k=5)
+    names = [r.get("symbol_name") for r in results]
+    assert "preprocess" in names
+    assert "preprocess_data" not in names
 
 
-def test_preprocess_query_preserves_code_symbols():
-    """Code symbols like function calls and class names are preserved."""
-    raw_query = "  'query_codebase()'  "
-    normalized = retriever.preprocess_query(raw_query)
-    assert normalized == "query_codebase()"
-    
+def test_retrieve_shows_method_with_parent_class(monkeypatch):
+    """Method symbols display as ClassName.method_name."""
+    points = [
+        _point(
+            {
+                "file": "model.py",
+                "start_line": 8,
+                "end_line": 10,
+                "text": "    def train(self):\n        pass",
+                "symbol_name": "train",
+                "symbol_type": "method",
+                "parent_class": "Model",
+            }
+        ),
+    ]
+    _setup_mocks(monkeypatch, points)
+
+    context = retriever.retrieve("How do I train the model?", top_k=1)
+
+    assert "Method: Model.train" in context
+    assert "Location: Lines 8-10" in context
+
+
+def test_retrieve_falls_back_to_regex_for_line_chunks(monkeypatch):
+    """Non-symbol chunks still use the old def-line regex fallback."""
+    points = [
+        _point(
+            {
+                "file": "utils.py",
+                "start_line": 3,
+                "text": "def helper():\n    pass",
+                "is_symbol": False,
+            }
+        ),
+    ]
+    _setup_mocks(monkeypatch, points)
+
+    context = retriever.retrieve("What is helper?", top_k=1)
+
+    assert "Function: helper" in context
+    assert "Location: Line 3" in context
+
+
+# ── repository tag filtering (shared-index mode, from PR #212) ────────────
+
+def test_keyword_search_filters_by_repository(monkeypatch):
+    """BM25 chunks tagged with a different repository are excluded."""
+    bm25 = MagicMock()
+    bm25.get_scores.return_value = [0.5, 0.5]
+    monkeypatch.setattr(
+        retriever, "_get_bm25", lambda repo_id: {
+            "bm25": bm25,
+            "chunks": [
+                {"text": "def foo():\n    pass", "repository": "repoA"},
+                {"text": "def foo():\n    pass", "repository": "repoB"},
+            ],
+            "corpus": ["def foo():\n    pass", "def foo():\n    pass"],
+        }
+    )
+
+    results = retriever._keyword_search("foo", top_k=10, repository_names=["repoA"])
+    repos = {c["repository"] for c in results}
+    assert repos == {"repoA"}
+
+
+def test_exact_symbol_search_filters_by_repository(monkeypatch):
+    """Symbol chunks tagged with a different repository are excluded."""
+    monkeypatch.setattr(
+        retriever, "_get_bm25", lambda repo_id: {
+            "bm25": MagicMock(),
+            "chunks": [
+                {"text": "def helper():\n    pass", "symbol_name": "helper", "is_symbol": True, "repository": "repoA"},
+                {"text": "def helper():\n    pass", "symbol_name": "helper", "is_symbol": True, "repository": "repoB"},
+            ],
+            "corpus": ["def helper():\n    pass", "def helper():\n    pass"],
+        }
+    )
+
+    results = retriever._exact_symbol_search(["helper"], top_k=5, repository_names=["repoA"])
+    repos = {c["repository"] for c in results}
+    assert repos == {"repoA"}

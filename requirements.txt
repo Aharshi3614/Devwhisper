@@ -6,3 +6,5 @@ python-dotenv==1.2.2
 openai==2.46.0
 requests==2.34.2
 rank-bm25==0.2.2
+pathspec==1.1.1
+python-multipart>=0.0.9

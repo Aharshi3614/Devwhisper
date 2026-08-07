@@ -117,6 +117,11 @@ Developer hears the response
    python indexer.py
    ```
 
+> **💡 .gitignore awareness:** DevWhisper automatically skips files and
+> directories listed in the codebase's `.gitignore` when indexing. Nested
+> `.gitignore` files are honored too, so build artifacts, virtual
+> environments, and other ignored files stay out of the search index.
+
 7. **Start the server**
    ```bash
    uvicorn main:app --reload --port 8000
@@ -141,6 +146,105 @@ curl http://localhost:8000/health
 You should get a response back confirming the server is live. You can also run the standalone test client (see below) to check the full pipeline end-to-end without needing a live voice call.
 
 ---
+
+# 📋 Skipped File Reporting
+
+During indexing, DevWhisper scans the codebase and filters files based on extension, size, and `.gitignore` rules. Files that are not indexed are reported with a specific reason so you can see exactly what was excluded and why.
+
+## Skip Reasons
+
+| Reason | When it applies | `detail` field |
+| --- | --- | --- |
+| `unsupported_extension` | File extension is not in `SUPPORTED_EXTENSIONS` (`.py`, `.md`) | The actual extension (e.g., `.txt`, `.png`) |
+| `oversized` | File exceeds `MAX_FILE_SIZE_MB` (default 1 MB) | e.g., `"2.50 MB exceeds 1.00 MB limit"` |
+| `gitignored` | File matches a `.gitignore` rule | `"matched by .gitignore rule"` |
+| `unreadable` | `os.path.getsize()` raised an `OSError` (permissions, broken symlink) | The OS error message |
+
+---
+
+## Where to See Skip Reports
+
+### 1. Server Logs
+
+Every skipped file is logged at `INFO` level:
+
+```text
+Skipping unsupported file /path/to/notes.txt (extension '.txt' not in ['.md', '.py'])
+Skipping oversized file /path/to/big.py (2.50 MB exceeds 1.00 MB limit)
+Skipping gitignored file /path/to/secret.py
+
+```
+
+### 2. `/index/progress` SSE Stream
+
+The `progress_state` payload includes skipped file details:
+
+```json
+{
+  "skipped": [
+    {
+      "path": "/.../notes.txt",
+      "size_bytes": null,
+      "reason": "unsupported_extension",
+      "detail": ".txt"
+    },
+    {
+      "path": "/.../big.py",
+      "size_bytes": 2621440,
+      "reason": "oversized",
+      "detail": "2.50 MB exceeds 1.00 MB limit"
+    }
+  ],
+  "skipped_count": 2
+}
+
+```
+
+### 3. `.index_cache.json`
+
+The `_metadata.skipped_files` array records all skips from the most recent indexing run, persisted for offline inspection.
+
+---
+
+## Adding Support for a New File Type
+
+Edit `SUPPORTED_EXTENSIONS` in `config.py`:
+
+```python
+SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md", ".txt"})
+
+```
+
+*After updating this configuration, re-index the project so files with the new extension are processed.*
+
+---
+
+## Architecture Documentation Snippet (`docx/architecture.md`)
+
+```markdown
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**SKIP REPORTING (Issue #223)**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+During indexing, files that are not indexed are reported with a reason
+rather than silently dropped. The `collect_indexable_files()` function
+in `indexer.py` returns a `skipped` list of dicts, each containing:
+
+  - `path`       : Absolute path to the skipped file
+  - `size_bytes` : File size in bytes (or `None` if unreadable)
+  - `reason`     : One of `unsupported_extension`, `oversized`,
+                   `gitignored`, `unreadable`
+  - `detail`     : Human-readable context (the extension, the size
+                   limit violation, the error message, etc.)
+
+Every skip is also logged at `INFO` level via the application logger,
+and the full `skipped` list is surfaced through the `/index/progress`
+SSE stream and persisted in `.index_cache.json` under
+`_metadata.skipped_files`.
+
+```
 
 ## 🐳 Run with Docker
 
@@ -186,6 +290,18 @@ You can test DevWhisper's conversation flow directly from your terminal — with
 | `llm.py` | Sends the query and context to Groq and returns the answer |
 | `test_client.py` | Standalone CLI client for testing without Vapi |
 | `sample_codebase/` | Put your own Python project files here |
+
+---
+
+## ⚙️ Configurable Recording Timeout
+
+The maximum voice recording duration is configurable via the **Settings panel** (⚙️ icon, top-right).
+
+- Default: **30 seconds**
+- Range: **5 – 120 seconds**
+- The setting is saved in `localStorage` and persists across sessions.
+- While recording, a **live countdown** is displayed on the mic button showing remaining seconds.
+- Recording **stops automatically** when the timeout expires and submits whatever was captured.
 
 ---
 
