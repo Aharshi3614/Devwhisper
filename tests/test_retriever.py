@@ -143,7 +143,7 @@ def test_extract_symbols_finds_camel_case():
 
 def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
     """When BM25 index is absent, degrade to pure vector search."""
-    monkeypatch.setattr(retriever, "_bm25_data", None)
+    monkeypatch.setattr(retriever, "_get_bm25", lambda repo_id: None)
     points = [_point({"file": "test.py", "start_line": 1, "text": "def foo(): pass"})]
     _setup_mocks(monkeypatch, points)
 
@@ -155,7 +155,7 @@ def test_hybrid_retrieve_falls_back_to_vector_only(monkeypatch):
 def test_exact_symbol_search_prefers_metadata_match(monkeypatch):
     """Symbol chunks with matching symbol_name get exact metadata hits."""
     monkeypatch.setattr(
-        retriever, "_bm25_data",
+        retriever, "_get_bm25",lambda repo_id:
         {
             "bm25": MagicMock(),
             "chunks": [
@@ -213,3 +213,43 @@ def test_retrieve_falls_back_to_regex_for_line_chunks(monkeypatch):
 
     assert "Function: helper" in context
     assert "Location: Line 3" in context
+
+
+# ── repository tag filtering (shared-index mode, from PR #212) ────────────
+
+def test_keyword_search_filters_by_repository(monkeypatch):
+    """BM25 chunks tagged with a different repository are excluded."""
+    bm25 = MagicMock()
+    bm25.get_scores.return_value = [0.5, 0.5]
+    monkeypatch.setattr(
+        retriever, "_get_bm25", lambda repo_id: {
+            "bm25": bm25,
+            "chunks": [
+                {"text": "def foo():\n    pass", "repository": "repoA"},
+                {"text": "def foo():\n    pass", "repository": "repoB"},
+            ],
+            "corpus": ["def foo():\n    pass", "def foo():\n    pass"],
+        }
+    )
+
+    results = retriever._keyword_search("foo", top_k=10, repository_names=["repoA"])
+    repos = {c["repository"] for c in results}
+    assert repos == {"repoA"}
+
+
+def test_exact_symbol_search_filters_by_repository(monkeypatch):
+    """Symbol chunks tagged with a different repository are excluded."""
+    monkeypatch.setattr(
+        retriever, "_get_bm25", lambda repo_id: {
+            "bm25": MagicMock(),
+            "chunks": [
+                {"text": "def helper():\n    pass", "symbol_name": "helper", "is_symbol": True, "repository": "repoA"},
+                {"text": "def helper():\n    pass", "symbol_name": "helper", "is_symbol": True, "repository": "repoB"},
+            ],
+            "corpus": ["def helper():\n    pass", "def helper():\n    pass"],
+        }
+    )
+
+    results = retriever._exact_symbol_search(["helper"], top_k=5, repository_names=["repoA"])
+    repos = {c["repository"] for c in results}
+    assert repos == {"repoA"}

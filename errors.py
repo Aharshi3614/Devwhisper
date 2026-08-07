@@ -1,8 +1,8 @@
-"""errors.py — Standardized error response utilities for DevWhisper.
+"""errors.py — Standardized error response and control flow utilities for DevWhisper.
 
-This module provides helper functions and models to generate consistent JSON error
-responses across all API endpoints. Using a centralized error format ensures
-clients can reliably parse error details regardless of which endpoint fails.
+This module provides helper functions, Pydantic models, and decorators to generate
+consistent JSON error responses and standardize backend execution flows across all API
+endpoints and services.
 
 Expected error shape:
     {
@@ -12,12 +12,14 @@ Expected error shape:
     }
 
 Usage:
-    from errors import ErrorResponse, error_response
+    from errors import ErrorResponse, error_response, safe_execute
     return error_response(400, "Invalid query parameter")
 """
 
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
+from functools import wraps
+from logger import logger
 
 
 class ErrorResponse(BaseModel):
@@ -50,3 +52,20 @@ def error_response(status_code: int, detail: str) -> JSONResponse:
             "message": detail,
         },
     )
+
+
+def safe_execute(error_message: str = "An unexpected error occurred", default_return=None):
+    """
+    Standardized execution decorator to unify error handling and control flow 
+    across backend processing modules.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                logger.error("Error in %s: %s", func.__name__, e, exc_info=True)
+                return default_return
+        return wrapper
+    return decorator

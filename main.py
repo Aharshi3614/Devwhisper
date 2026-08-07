@@ -40,6 +40,7 @@ from indexer import index_directory, progress_state, get_before_cache_data, coll
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
 from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
+import repositories
 import contextvars
 import logging
 import queue
@@ -197,9 +198,13 @@ def queue_worker():
                             os.remove(temp_zip_path)
                         except Exception:
                             pass
+                    directory = SAMPLE_CODEBASE_DIRECTORY
+                else:
+                    # reindex: scan the registered path for this repository
+                    directory = repositories.get_repo_path(job.get("repo_id")) or SAMPLE_CODEBASE_DIRECTORY
 
                 # Run the actual indexing pipeline
-                index_directory(SAMPLE_CODEBASE_DIRECTORY)
+                index_directory(directory, repo_id=job.get("repo_id"))
 
                 job["status"] = "completed"
                 job["percent"] = 100
@@ -234,6 +239,15 @@ def queue_worker():
 async def startup_event():
     """Warm up the embedder and check whether re-indexing is recommended."""
     threading.Thread(target=queue_worker, daemon=True).start()
+    os.makedirs(repositories.OUTPUT_DIRECTORY, exist_ok=True)
+    # sample_codebase is the default repo, but it is git-ignored and may be
+    # absent on a fresh checkout — don't crash startup when it is missing.
+    if not repositories.load_repositories() and os.path.isdir(SAMPLE_CODEBASE_DIRECTORY):
+        repositories.add_repository(SAMPLE_CODEBASE_DIRECTORY)
+    if repositories.get_current_repo_id() is None:
+        first = repositories.load_repositories()
+        if first:
+            repositories.set_current_repo(first[0]["id"])
     global reindex_recommended, _reindex_last_checked_at
     reindex_recommended = is_repository_change()
     _reindex_last_checked_at = time.time()  # start the TTL clock at startup
@@ -401,7 +415,7 @@ async def vapi_webhook(request: Request):
                         continue
 
                     # ── Cache miss: run full pipeline ─────────────────────
-                    context, sources = retrieve(query, include_sources=True)
+                    context, sources = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
                     history = get_memory(session_id)
                     answer = route_command(query, session_id) or generate_response(query, context, history)
 
@@ -450,9 +464,17 @@ def get_statistics():
     Returns:
         JSON with indexed_file_count, chunk_count, and collection_info.
     """
+    current_repo_id = repositories.get_current_repo_id()
+    if current_repo_id is not None:
+        target_collection = repositories.collection_name(current_repo_id)
+        target_cache = repositories.cache_path(current_repo_id)
+    else:
+        target_collection = QDRANT_COLLECTION_NAME
+        target_cache = ".index_cache.json"
+
     try:
         try:
-            collection_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+            collection_info = qdrant_client.get_collection(target_collection)
             collection_dict = (
                 collection_info.model_dump() if hasattr(collection_info, "model_dump")
                 else collection_info.dict() if hasattr(collection_info, "dict")
@@ -466,7 +488,7 @@ def get_statistics():
             collection_dict = {}
             chunk_count = 0
 
-        metadata = get_repository_metadata()
+        metadata = get_repository_metadata(target_cache)
         indexed_file_count = metadata.get("indexed_file_count", 0)
 
         return {
@@ -525,7 +547,7 @@ async def stream_query(request: Request):
             return StreamingResponse(cached_generator(), media_type="text/plain")
 
         # Cache miss: run retrieval
-        context, sources = retrieve(query, include_sources=True)
+        context, sources = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
         history = get_memory(session_id)
 
         def event_generator():
@@ -641,6 +663,7 @@ def start_indexing():
         "id": job_id,
         "type": "reindex",
         "name": "Manual Re-index",
+        "repo_id": repositories.get_current_repo_id(),
         "status": "pending",
         "percent": 0,
         "message": "Pending in queue...",
@@ -711,6 +734,7 @@ async def upload_codebase(file: UploadFile = File(...)):
         "id": job_id,
         "type": "upload",
         "name": f"Upload: {file.filename}",
+        "repo_id": repositories.get_current_repo_id(),
         "temp_zip_path": temp_zip_path,
         "status": "pending",
         "percent": 0,
@@ -813,12 +837,21 @@ def is_repository_change() -> bool:
     Returns:
         True if the repository changed since the last index, else False.
     """
+    current_repo_id = repositories.get_current_repo_id()
+
+    directory = SAMPLE_CODEBASE_DIRECTORY
+    if current_repo_id is not None:
+        found = repositories.get_repo_path(current_repo_id)
+        if found:
+            directory = found
+
     cache_data = {}
-    gitignore_rules = load_gitignore_rules(SAMPLE_CODEBASE_DIRECTORY)
+    cache_file = repositories.cache_path(current_repo_id) if current_repo_id else ".index_cache.json"
+    gitignore_rules = load_gitignore_rules(directory)
     all_files, _skipped = collect_indexable_files(
-        SAMPLE_CODEBASE_DIRECTORY, gitignore_rules=gitignore_rules
+        directory, gitignore_rules=gitignore_rules
     )
-    before_cache_data = get_before_cache_data()
+    before_cache_data = get_before_cache_data(cache_file)
     for path in all_files:
         cache_data[path] = {
             "mtime": os.path.getmtime(path),
@@ -862,7 +895,8 @@ def get_index_suggestions():
     """
     suggestions = []
 
-    cache_path = ".index_cache.json"
+    current_repo_id = repositories.get_current_repo_id()
+    cache_path = repositories.cache_path(current_repo_id) if current_repo_id else ".index_cache.json"
     cache_data = {}
     if os.path.exists(cache_path):
         try:
@@ -928,3 +962,68 @@ def get_index_suggestions():
     selected_suggestions = unique_suggestions[:4]
 
     return {"suggestions": selected_suggestions}
+  
+
+def _is_indexed(repo_id: str) -> bool:
+    """Return True if the repository already has an index cache file."""
+    return os.path.exists(repositories.cache_path(repo_id))
+
+
+def _queue_index(repo_id: str) -> None:
+    """Queue an auto-indexing job for *repo_id*."""
+    if progress_state.get("running"):
+        return
+    job = {
+        "id": str(uuid.uuid4()),
+        "type": "reindex",
+        "name": f"Auto-index: {repo_id}",
+        "repo_id": repo_id,
+        "status": "pending",
+        "percent": 0,
+        "message": "Pending in queue...",
+        "created_at": time.time(),
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "error": None,
+    }
+
+    jobs_history.append(job)
+    indexing_queue.put(job)
+
+
+@app.get("/repos")
+def list_repositories():
+    """List all registered repositories and the currently active one."""
+    repos = repositories.load_repositories()
+    for repo in repos:
+        repo["indexed"] = _is_indexed(repo["id"])
+    return {"repos": repos, "current": repositories.get_current_repo_id()}
+
+
+@app.post("/repos/add")
+def add_repository_endpoint(payload: dict):
+    """Register a new repository by its server path."""
+    path = payload.get("path")
+    if not path:
+        return error_response(400, "path is required")
+    if not os.path.isdir(path):
+        return error_response(400, f"Directory not found: {path}")
+
+    repo_id = repositories.add_repository(path)
+    if not _is_indexed(repo_id):
+        _queue_index(repo_id)
+    return {"id": repo_id, "indexed": _is_indexed(repo_id)}
+
+
+@app.post("/repos/switch")
+def switch_repository_endpoint(payload: dict):
+    """Switch the active repository, auto-indexing if needed"""
+    repo_id = payload.get("repo_id")
+    if not repo_id:
+        return error_response(400, "repo_id is required")
+    repositories.set_current_repo(repo_id)
+
+    if not _is_indexed(repo_id):
+        _queue_index(repo_id)
+    return {"id": repo_id, "indexed": _is_indexed(repo_id)}
+

@@ -32,6 +32,8 @@ import pickle
 import re
 
 from sentence_transformers import SentenceTransformer
+
+import repositories as repo_registry
 import vector_store
 
 from config import (
@@ -53,18 +55,28 @@ client = vector_store.client
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 
 # ---------------------------------------------------------------------------
-# BM25 index (lazy-loaded at import time)
+# BM25 index (lazy-loaded per repository)
 # ---------------------------------------------------------------------------
-_bm25_data = None
-try:
-    with open(BM25_INDEX_PATH, "rb") as f:
-        _bm25_data = pickle.load(f)
-        logger.info(f"BM25 index loaded from {BM25_INDEX_PATH}")
-except FileNotFoundError:
-    logger.info("BM25 index not found — keyword search disabled")
-except Exception as e:
-    logger.warning(f"Failed to load BM25 index: {e}")
+_bm25_data: dict[str, dict] = {}
 
+def _get_bm25(repo_id: str | None) -> dict | None:
+    if repo_id is None:
+        path = BM25_INDEX_PATH
+    else:
+        path = repo_registry.bm25_path(repo_id)
+
+    if repo_id not in _bm25_data:
+        try:
+            with open(path, "rb") as f:
+                _bm25_data[repo_id] = pickle.load(f)
+        except FileNotFoundError:
+            _bm25_data[repo_id] = None
+            logger.info(f"BM25 index not found - keyword search disabled.")
+        except Exception as e:
+            _bm25_data[repo_id] = None
+            logger.warning(f"Failed to load BM25 index: {e}")
+
+    return _bm25_data[repo_id]
 
 def preprocess_query(query: str) -> str:
     """Normalize user search queries by stripping whitespace and redundant punctuation."""
@@ -145,14 +157,16 @@ def _keyword_search(
     query: str,
     top_k: int = HYBRID_TOP_K,
     metadata_filter: dict | None = None,
+    repo_id: str | None = None,
     repository_names: list[str] | None = None,
 ) -> list[dict]:
     """BM25 keyword search filtered by metadata and repositories. Returns chunks with 'bm25_score' and unique '_idx'."""
-    if _bm25_data is None:
+    bm25_data = _get_bm25(repo_id)
+    if bm25_data is None:
         return []
 
     tokenize_query = _tokenize(query)
-    bm25 = _bm25_data["bm25"]
+    bm25 = bm25_data["bm25"]
     scores = bm25.get_scores(tokenize_query)
     top_indices = sorted(
         range(len(scores)), key=lambda i: scores[i], reverse=True
@@ -161,7 +175,7 @@ def _keyword_search(
     results = []
     for idx in top_indices:
         if scores[idx] > 0:
-            chunk = _bm25_data["chunks"][idx].copy()
+            chunk = bm25_data["chunks"][idx].copy()
             # Apply metadata filter
             if not _matches_metadata_filter(chunk, metadata_filter):
                 continue
@@ -206,16 +220,19 @@ def _exact_symbol_search(
     symbols: list[str],
     top_k: int = HYBRID_TOP_K,
     metadata_filter: dict | None = None,
+    repo_id: str | None = None,
     repository_names: list[str] | None = None,
 ) -> list[dict]:
     """
     Find chunks with exact symbol name matches, filtered by metadata and repositories, ranked by match count.
     """
-    if not symbols or _bm25_data is None:
+
+    bm25_data = _get_bm25(repo_id)
+    if not symbols or bm25_data is None:
         return []
 
     matches = []
-    for idx, chunk in enumerate(_bm25_data["chunks"]):
+    for idx, chunk in enumerate(bm25_data["chunks"]):
         if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
             continue
         if repository_names and chunk.get("repository") and chunk.get("repository") not in repository_names:
@@ -301,6 +318,7 @@ def retrieve(
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
     metadata_filter: dict | None = None,
+    repo_id: str | None = None,
     repositories: list[str] | str | None = None,
 ):
     """
@@ -311,12 +329,19 @@ def retrieve(
         top_k: Number of top results to return after fusion.
         include_sources: If True, also return the list of source files/repositories.
         metadata_filter: Optional key-value filter for metadata-constrained search.
-        repositories: Optional single repository string or list of repository names to search across.
+        repo_id: Optional repository id. When set, searches that repository's
+            dedicated Qdrant collection and BM25 index (per-repository isolation).
+        repositories: Optional single repository name or list of repository
+            names to filter by the ``repository`` payload tag (shared-index mode).
 
     Returns:
         If include_sources is False: formatted context string.
         If include_sources is True: tuple of (formatted_context, unique_sources).
     """
+    if repo_id is not None:
+        target_collection = repo_registry.collection_name(repo_id)
+    else:
+        target_collection = QDRANT_COLLECTION_NAME
     query = preprocess_query(query)
     if not query:
         return ("", []) if include_sources else ""
@@ -332,14 +357,17 @@ def retrieve(
 
     # ── Dense vector search (Qdrant) ────────────────────────────────────
     vector = embedder.encode(query).tolist()
-    query_limit = HYBRID_TOP_K if _bm25_data is not None else top_k
-    qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list)
+    query_limit = HYBRID_TOP_K if _get_bm25(repo_id) is not None else top_k
+    # Repo-isolated collections already scope results to one repository, and
+    # legacy payloads have no ``repository`` tag — so only apply the
+    # repository-name filter in shared-collection mode (repo_id is None).
+    qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
 
     qdrant_result = vector_store.query_points(
         vector=vector,
         limit=query_limit,
         query_filter=qdrant_filter,
-        collection_name=QDRANT_COLLECTION_NAME,
+        collection_name=target_collection,
         score_threshold=QDRANT_SIMILARITY_THRESHOLD,
     )
 
@@ -362,11 +390,11 @@ def retrieve(
         })
 
     # ── Sparse keyword search (BM25) ────────────────────────────────────
-    keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter, repository_names=repo_list)
+    keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
 
     # ── Exact symbol matching ──────────────────────────────────────────────
     symbols = _extract_symbols(query)
-    symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter, repository_names=repo_list)
+    symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
 
     # ── Fuse results ──────────────────────────────────────────────────────
     all_nonempty_chunks = [r for r in [vector_chunks, keyword_chunks, symbol_chunks] if r]

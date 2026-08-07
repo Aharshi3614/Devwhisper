@@ -57,6 +57,8 @@ from config import (
 from logger import logger
 from symbol_parser import extract_symbols_from_file
 
+import repositories
+
 import pickle
 from rank_bm25 import BM25Okapi
 
@@ -132,28 +134,62 @@ def collect_indexable_files(
             if file == ".gitignore":
                 continue  # .gitignore files are never indexed
 
-            if os.path.splitext(file)[1].lower() not in SUPPORTED_EXTENSIONS:
+            ext = os.path.splitext(file)[1].lower()
+            if ext not in SUPPORTED_EXTENSIONS:
+                path = os.path.join(root, file)
+                logger.info(
+                    "Skipping unsupported file %s (extension %r not in %s)",
+                    path,
+                    ext,
+                    sorted(SUPPORTED_EXTENSIONS),
+                )
+                skipped.append({
+                    "path": path,
+                    "size_bytes": None,
+                    "reason": "unsupported_extension",
+                    "detail": ext if ext else "(no extension)",
+                })
                 continue
 
             path = os.path.join(root, file)
             if _is_gitignored(path, rules):
                 logger.info("Skipping gitignored file %s", path)
-                skipped.append({"path": path, "size_bytes": None, "reason": "gitignored"})
+                skipped.append({
+                    "path": path,
+                    "size_bytes": None,
+                    "reason": "gitignored",
+                    "detail": "matched by .gitignore rule",
+                })
                 continue
 
             try:
                 size = os.path.getsize(path)
             except OSError as exc:
                 logger.warning("Skipping unreadable file %s: %s", path, exc)
-                skipped.append({"path": path, "size_bytes": None, "reason": "unreadable"})
+                skipped.append({
+                    "path": path,
+                    "size_bytes": None,
+                    "reason": "unreadable",
+                    "detail": str(exc),
+                })
                 continue
 
             if size > limit:
                 logger.warning(
                     "Skipping oversized file %s (%.2f MB exceeds %.2f MB limit)",
-                    path, size / (1024 * 1024), limit / (1024 * 1024),
+                    path,
+                    size / (1024 * 1024),
+                    limit / (1024 * 1024),
                 )
-                skipped.append({"path": path, "size_bytes": size, "reason": "oversized"})
+                skipped.append({
+                    "path": path,
+                    "size_bytes": size,
+                    "reason": "oversized",
+                    "detail": (
+                        f"{size / (1024 * 1024):.2f} MB exceeds "
+                        f"{limit / (1024 * 1024):.2f} MB limit"
+                    ),
+                })
                 continue
 
             files_to_index.append(path)
@@ -161,19 +197,19 @@ def collect_indexable_files(
     return files_to_index, skipped
 
 
-def create_collection() -> None:
+def create_collection(collection_name: str) -> None:
     """
     (Re)create the Qdrant collection with cosine distance and the configured embedding dimension.
 
     Deletes the existing collection if it already exists to ensure a clean state.
     """
     try:
-        client.delete_collection(QDRANT_COLLECTION_NAME)
+        client.delete_collection(collection_name)
     except Exception:
         pass  # Collection may not exist; safe to ignore.
 
     client.create_collection(
-        collection_name=QDRANT_COLLECTION_NAME,
+        collection_name=collection_name,
         vectors_config=VectorParams(
             size=EMBEDDING_DIMENSIONS,
             distance=Distance.COSINE,
@@ -249,7 +285,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     return chunks
 
 
-def index_directory(directory: str) -> None:  # noqa: C901
+def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa: C901
     """
     Main indexing pipeline: scan, chunk, embed, and store codebase into Qdrant + BM25.
 
@@ -267,6 +303,9 @@ def index_directory(directory: str) -> None:  # noqa: C901
 
     Args:
         directory: Root directory containing the codebase to index.
+        repo_id: Optional per-repository id. When given, index artifacts are
+            stored under per-repository names (repositories.py); when None,
+            the legacy global names are used.
 
     Side effects:
       - Updates global `progress_state`.
@@ -274,6 +313,21 @@ def index_directory(directory: str) -> None:  # noqa: C901
       - Writes .bm_index.pkl (BM25 index).
       - Writes .index_cache.json (metadata + file hashes).
     """
+    # ── Resolve per-repository artifact names ──────────────────────────
+    # repo_id given → derive names from it; None → legacy global names.
+    if repo_id is not None:
+        target_collection = repositories.collection_name(repo_id)
+        target_bm25 = repositories.bm25_path(repo_id)
+        target_cache = repositories.cache_path(repo_id)
+    else:
+        target_collection = QDRANT_COLLECTION_NAME
+        target_bm25 = BM25_INDEX_PATH
+        target_cache = ".index_cache.json"
+
+    # Display name stamped on every chunk/payload so shared-index queries can
+    # filter by repository (matches the `name` stored in the registry).
+    repo_name = os.path.basename(os.path.normpath(directory))
+
     progress_state.update({
         "running": True,
         "current": 0,
@@ -289,7 +343,7 @@ def index_directory(directory: str) -> None:  # noqa: C901
 
     try:
         # ── Load previous cache for incremental mode ──────────────────────
-        before_cache_data = get_before_cache_data()
+        before_cache_data = get_before_cache_data(target_cache)
 
         if isinstance(before_cache_data, dict):
             metadata = before_cache_data.get("_metadata")
@@ -302,8 +356,8 @@ def index_directory(directory: str) -> None:  # noqa: C901
                     )
 
         # ── Prepare Qdrant collection ─────────────────────────────────────
-        if "--incremental" not in sys.argv or not client.collection_exists(QDRANT_COLLECTION_NAME):
-            create_collection()
+        if "--incremental" not in sys.argv or not client.collection_exists(target_collection):
+            create_collection(target_collection)
 
         points = []
         total_uploaded = 0
@@ -318,7 +372,7 @@ def index_directory(directory: str) -> None:  # noqa: C901
             batch = points
             points = []
             client.upsert(
-                collection_name=QDRANT_COLLECTION_NAME,
+                collection_name=target_collection,
                 points=batch,
             )
             total_uploaded += len(batch)
@@ -376,6 +430,7 @@ def index_directory(directory: str) -> None:  # noqa: C901
             print(msg)
 
             for chunk in chunks:
+                chunk["repository"] = repo_name
                 vector = embedder.encode(chunk["text"]).tolist()
                 unique_str = f"{path}_{chunk['start_line']}"
                 stable_id = str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
@@ -401,18 +456,20 @@ def index_directory(directory: str) -> None:  # noqa: C901
         all_chunks = []
         for path in all_files:
             chunks = get_file_chunks(path)
+            for chunk in chunks:
+                chunk["repository"] = repo_name
             all_chunks.extend(chunks)
 
         if all_chunks:
             tokenize_corpus = [tokenize(c["text"]) for c in all_chunks]
             bm25 = BM25Okapi(tokenize_corpus)
-            with open(BM25_INDEX_PATH, "wb") as f:
+            with open(target_bm25, "wb") as f:
                 pickle.dump({
                     "bm25": bm25,
                     "corpus": [c["text"] for c in all_chunks],
                     "chunks": all_chunks,
                 }, f)
-            print(f"BM25 index saved ({len(all_chunks)} chunks) to {BM25_INDEX_PATH}")
+            print(f"BM25 index saved ({len(all_chunks)} chunks) to {target_bm25}")
 
         # ── Save cache metadata ──────────────────────────────────────────
         cache_data["_metadata"] = {
@@ -425,7 +482,7 @@ def index_directory(directory: str) -> None:  # noqa: C901
             "max_file_size_mb": MAX_FILE_SIZE_MB,
         }
 
-        with open(".index_cache.json", "w", encoding="utf-8") as f:
+        with open(target_cache, "w", encoding="utf-8") as f:
             json.dump(cache_data, f, indent=2, ensure_ascii=False)
 
         skip_summary = f", {len(skipped_files)} file(s) skipped" if skipped_files else ""
@@ -509,18 +566,18 @@ def load_gitignore_rules(root: str) -> list[tuple[str, PathSpec]]:
         rules.append((dirpath, spec))
     return rules
 
-def get_before_cache_data() -> dict:
+def get_before_cache_data(path: str) -> dict:
     """
-    Load the previous run's cache data from .index_cache.json.
+    Load the previous run's cache data from *path*.
 
     Returns:
         Dictionary of cached file metadata, or an empty dict if the file
         is missing or unreadable.
     """
     before_cache_data = {}
-    if os.path.exists(".index_cache.json"):
+    if os.path.exists(path):
         try:
-            with open(".index_cache.json", "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 before_cache_data = json.load(f)
         except Exception:
             logger.warning("Corrupted .index_cache.json found.")

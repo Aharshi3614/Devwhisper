@@ -37,6 +37,10 @@ export default defineConfig({
       '/static': {
         target: 'http://localhost:8000',
         changeOrigin: true
+      },
+      '/repos': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
       }
     }
   }

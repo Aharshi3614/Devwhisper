@@ -7,6 +7,13 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from main import app
+import repositories
+
+
+@pytest.fixture(autouse=True)
+def _default_repo(monkeypatch):
+    """Pin the active repository to None so tests read the legacy root cache."""
+    monkeypatch.setattr(repositories, "get_current_repo_id", lambda: None)
 
 
 @pytest.fixture(scope="module")

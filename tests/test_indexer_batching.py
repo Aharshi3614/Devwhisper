@@ -1,5 +1,6 @@
 """Tests for bounded Qdrant uploads during codebase indexing."""
 
+import pickle
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -96,3 +97,30 @@ def test_index_directory_preserves_small_codebase_behavior(
     mock_client.upsert.assert_called_once()
     assert len(mock_client.upsert.call_args.kwargs["points"]) == 3
     assert "Indexed 3/3 files" in capsys.readouterr().out
+
+
+def test_index_directory_stamps_repository_tag(tmp_path, monkeypatch):
+    """Every chunk stored in Qdrant and BM25 carries the repository tag.
+
+    This tag is what makes the shared-index repository filtering (PR #212)
+    actually usable — without it, ``repository`` filters match nothing.
+    """
+    file_paths = _create_python_files(tmp_path, 2)
+    mock_client = _configure_indexer(monkeypatch, tmp_path, file_paths)
+
+    indexer.index_directory(str(tmp_path))
+
+    # Qdrant payloads are stamped with the repository's basename.
+    upserted = []
+    for call in mock_client.upsert.call_args_list:
+        upserted.extend(call.kwargs["points"])
+    assert upserted, "expected at least one upserted point"
+    for point in upserted:
+        assert point.payload.get("repository") == tmp_path.name
+
+    # BM25 chunks are stamped as well.
+    with open(indexer.BM25_INDEX_PATH, "rb") as f:
+        bm25_data = pickle.load(f)
+    assert bm25_data["chunks"], "expected BM25 chunks to be written"
+    for chunk in bm25_data["chunks"]:
+        assert chunk.get("repository") == tmp_path.name

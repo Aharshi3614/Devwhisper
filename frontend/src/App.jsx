@@ -41,16 +41,6 @@ function Home() {
   const navigate = useNavigate()
 
   // Retrieve or generate a stable session ID so query history shows up in history panel
-  const [hasStarted, setHasStarted] = useState(false)
-
-  const SUGGESTED_PROMPTS = [
-    "What does the preprocess function do?",
-    "Where is the model saved after training?",
-    "How do I debug a KeyError in the pipeline?",
-    "What functions are defined in main.py?"
-  ]
-
-  // Retrieve or generate a stable session ID so query history shows up in history panel
   const [sessionId, setSessionId] = useState(() => {
     const key = 'devwhisper_session_id'
     const existing = sessionStorage.getItem(key)
@@ -252,24 +242,52 @@ function Home() {
     submitQueryText(lastSubmittedQuery)
   }, [submitQueryText, lastSubmittedQuery])
 
-  useEffect(() => {
-    const checkReindex = async () => {
-      try {
-        const res = await fetch('/index/change', { method: 'GET' })
-        if (res.ok) {
-          const data = await res.json()
-          setReindexRecommended(data.reindex_recommended)
-        }
-      }
-      catch (err) {
-          console.error('Error checking reindex recommendation:', err)
+  const checkReindex = useCallback(async () => {
+    try {
+      const res = await fetch('/index/change', { method: 'GET' })
+      if (res.ok) {
+        const data = await res.json()
+        setReindexRecommended(data.reindex_recommended)
       }
     }
+    catch (err) {
+        console.error('Error checking reindex recommendation:', err)
+    }
+  }, [])
 
+  useEffect(() => {
       checkReindex()
       const timer = setInterval(checkReindex, 30000)
       return () => clearInterval(timer)
-    }, [])
+    }, [checkReindex])
+
+  useEffect(() => {
+      // Refresh the banner right away when the active repository changes
+      window.addEventListener('repo-changed', checkReindex)
+      return () => window.removeEventListener('repo-changed', checkReindex)
+    }, [checkReindex])
+
+  useEffect(() => {
+    let active = true
+    const fetchSuggestions = async () => {
+      try {
+        const res = await fetch('/index/suggestions')
+        if (res.ok && active) {
+          const data = await res.json()
+          setSuggestions(data.suggestions || [])
+        }
+      } catch (err) {
+        console.error('Failed to load query suggestions:', err)
+      }
+    }
+
+    fetchSuggestions()
+    const timer = setInterval(fetchSuggestions, 15000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -380,12 +398,16 @@ function Home() {
         clearTimeout(mockTimerRef.current)
         mockTimerRef.current = null
       }
+    }
+  }, [stopCountdown])
 
+  useEffect(() => {
+    return () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort()
       }
     }
-  }, [submitQueryText, stopCountdown])
+  }, [])
 
   const handleMicClick = () => {
     if (speechSupported && recognitionRef.current) {
