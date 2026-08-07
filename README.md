@@ -200,10 +200,76 @@ The `progress_state` payload includes skipped file details:
 
 ```
 
-### 3. `.index_cache.json`
+### 3. .index_cache.json
+The _metadata.skipped_files array records all skips from the most recent indexing run, persisted for offline inspection.
 
-The `_metadata.skipped_files` array records all skips from the most recent indexing run, persisted for offline inspection.
 
+### 4. `GET /index/summary` — Repository Scan Summary APIA lightweight JSON endpoint that returns the latest indexing summary for frontend integration (issue #224).```bashcurl http://localhost:8000/index/summaryResponse Example:
+json{  "repository_id": "a1b2c3d4e5f6",  "repository_name": "Devwhisper",  "status": "done",  "indexed_file_count": 42,  "skipped_file_count": 3,  "indexing_duration_seconds": 12.47,  "indexing_timestamp": "2026-08-07T10:23:11.482103+00:00",  "current_file": "",  "percent": 100,  "message": "Indexing complete. 42 file(s) processed, 3 file(s) skipped, 873 chunks uploaded.",  "skipped_files": [    {      "path": "/.../notes.txt",      "size_bytes": null,      "reason": "unsupported_extension",      "detail": ".txt"    }  ]}
+
+
+Field
+Type
+Description
+
+
+
+repository_id
+string | null
+Current repository id (or null in legacy global mode).
+
+
+repository_name
+string | null
+Display name of the current repository.
+
+
+status
+string
+One of idle, running, done, error.
+
+
+indexed_file_count
+int
+Number of files successfully indexed in the latest run.
+
+
+skipped_file_count
+int
+Number of files skipped during the latest run.
+
+
+indexing_duration_seconds
+float | null
+Wall-clock duration of the latest run, in seconds (null before the first run).
+
+
+indexing_timestamp
+string | null
+ISO-8601 UTC timestamp marking the end of the latest run (null before the first run).
+
+
+current_file
+string
+File currently being indexed (non-empty only while status === "running").
+
+
+percent
+int
+0–100 progress for the active run.
+
+
+message
+string
+Human-readable status message.
+
+
+skipped_files
+list[dict]
+Detailed skip reasons from the latest run.
+
+
+The endpoint merges the live in-memory progress_state (for runs that are currently active) with the persisted _metadata block from .index_cache.json (for the most recent completed run), so it always reflects the freshest available data. It never raises—before the first index run it returns zero counts and null duration/timestamp so the frontend can render an empty state.
 ---
 
 ## Adding Support for a New File Type
