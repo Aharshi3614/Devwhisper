@@ -16,6 +16,7 @@ Endpoints:
     GET  /admin/sessions — List active conversation sessions (admin only).
     POST /index/start    — Trigger background indexing.
     GET  /index/progress — SSE stream of indexing progress.
+    GET  /index/summary  — Latest repository scan summary (issue #224).
     GET  /history        — Retrieve conversation history.
 
 Architecture:
@@ -783,6 +784,98 @@ def get_indexing_queue():
     """
     return {"jobs": jobs_history}
 
+
+# ---------------------------------------------------------------------------
+# Issue #224: Repository Scan Summary API
+# ---------------------------------------------------------------------------
+@app.get("/index/summary")
+def get_index_summary():
+    """
+    Return the latest repository scan summary for frontend integration.
+
+    Combines the live in-memory ``progress_state`` (for runs that are
+    currently active or just finished) with the persisted ``_metadata``
+    block from ``.index_cache.json`` (for the most recent completed run).
+
+    Response shape (always present):
+        {
+          "repository_id": str | null,
+          "repository_name": str | null,
+          "status": "idle" | "running" | "done" | "error",
+          "indexed_file_count": int,
+          "skipped_file_count": int,
+          "indexing_duration_seconds": float | null,
+          "indexing_timestamp": str | null,     # ISO-8601 UTC, last completed run
+          "current_file": str,                   # file being indexed right now (if running)
+          "percent": int,                        # 0–100 progress for the active run
+          "message": str,
+          "skipped_files": list[dict]            # detailed skip reasons (path, reason, detail)
+        }
+
+    The endpoint never raises — if the cache file is missing or corrupted
+    (e.g. before the first index run), it returns zero counts and null
+    duration/timestamp so the frontend can render an "empty state".
+    """
+    current_repo_id = repositories.get_current_repo_id()
+    if current_repo_id is not None:
+        target_cache = repositories.cache_path(current_repo_id)
+    else:
+        target_cache = ".index_cache.json"
+
+    # Defaults — returned when no indexing has happened yet.
+    summary = {
+        "repository_id": current_repo_id,
+        "repository_name": repositories.get_current_repo_name(),
+        "status": progress_state.get("status", "idle"),
+        "indexed_file_count": 0,
+        "skipped_file_count": 0,
+        "indexing_duration_seconds": None,
+        "indexing_timestamp": None,
+        "current_file": progress_state.get("current_file", ""),
+        "percent": progress_state.get("percent", 0),
+        "message": progress_state.get("message", ""),
+        "skipped_files": [],
+    }
+
+    # ── Merge persisted metadata from the latest completed run ──────────
+    # This is what makes the endpoint useful *after* indexing finishes and
+    # progress_state has been reset/clobbered by a later job.
+    persisted = get_repository_metadata(target_cache)
+    if isinstance(persisted, dict):
+        summary["indexed_file_count"] = persisted.get(
+            "indexed_file_count", summary["indexed_file_count"]
+        )
+        summary["skipped_file_count"] = persisted.get(
+            "skipped_file_count",
+            len(persisted.get("skipped_files", [])) or summary["skipped_file_count"],
+        )
+        summary["indexing_duration_seconds"] = persisted.get(
+            "indexing_duration_seconds", summary["indexing_duration_seconds"]
+        )
+        summary["indexing_timestamp"] = persisted.get(
+            "indexing_timestamp", summary["indexing_timestamp"]
+        )
+        if persisted.get("repository_name"):
+            summary["repository_name"] = persisted["repository_name"]
+        summary["skipped_files"] = persisted.get(
+            "skipped_files", summary["skipped_files"]
+        )
+
+    # ── Overlay live progress for an in-progress / just-finished run ────
+    # While indexing is running, progress_state has the freshest counts.
+    # After it finishes, the values written above (from _metadata) win
+    # because they are the authoritative final numbers.
+    if progress_state.get("running"):
+        summary["status"] = "running"
+        summary["indexed_file_count"] = progress_state.get("current", summary["indexed_file_count"])
+        summary["skipped_file_count"] = progress_state.get(
+            "skipped_count", summary["skipped_file_count"]
+        )
+        summary["skipped_files"] = progress_state.get(
+            "skipped", summary["skipped_files"]
+        )
+
+    return summary
 
 @app.get("/history")
 def get_history(session_id: str | None = None):
