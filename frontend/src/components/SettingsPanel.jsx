@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, use } from 'react'
 import ThemeToggle from './ThemeToggle.jsx'
 import './SettingsPanel.css'
 
@@ -19,6 +19,9 @@ export default function SettingsPanel() {
   const [uploadError, setUploadError] = useState('')
   const [uploadSuccess, setUploadSuccess] = useState('')
   const [dragActive, setDragActive] = useState(false)
+  const [repos, setRepos] = useState([])
+  const [currentRepoId, setCurrentRepoId] = useState(null)
+  const [repoPath, setRepoPath] = useState('')
 
   useEffect(() => {
     localStorage.setItem('devwhisper_auto_submit', autoSubmitVoice)
@@ -74,6 +77,26 @@ export default function SettingsPanel() {
       console.error('Failed to fetch indexing queue:', err)
     }
   }, [])
+
+  const fetchRepos = useCallback(async () => {
+    try {
+      const res = await fetch('/repos')
+      if (res.ok) {
+        const data = await res.json()
+        setRepos(data.repos || [])
+        setCurrentRepoId(data.current || null)
+      }
+    } catch (err) {
+      console.error('Failed to fetch repositories:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isOpen) return
+    fetchRepos()
+    const timer = setInterval(fetchRepos, 3000)
+    return () => clearInterval(timer)
+  }, [isOpen, fetchRepos])
 
   useEffect(() => {
     if (!isOpen) return
@@ -163,6 +186,35 @@ export default function SettingsPanel() {
       setUploadError(err.message || 'Failed to start indexing.')
     }
   }, [progress, fetchQueue])
+
+  const handleAddRepo = useCallback(async () => {
+    if (!repoPath.trim()) return
+    const res = await fetch('/repos/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: repoPath})
+    })
+    if (res.ok) {
+      setRepoPath('')
+      fetchRepos()
+    } else {
+      const data = await res.json()
+      console.error('Failed to add repository:', data.message || res.status)
+    }
+  }, [repoPath, fetchRepos])
+
+  const handleSwitchRepo = useCallback(async (id) => {
+    const res = await fetch('/repos/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_id: id })
+    })
+
+    if (res.ok) {
+      fetchRepos()
+      window.dispatchEvent(new Event('repo-changed')) 
+    }
+  }, [fetchRepos])
 
   return (
     <>
@@ -361,6 +413,45 @@ export default function SettingsPanel() {
                       </div>
                     </div>
                   )}
+                </div>
+              </div>
+                  
+              {/* Repositories Section */}
+              <div className="settings-section">
+                <div className="setting-item vertical">
+                  <span className="setting-label">Repositories</span>
+                  <span className="setting-desc">Add server paths and switch the active repository.</span>
+
+                  <div className="repo-add-row">
+                    <input
+                      type="text"
+                      placeholder="Server path, e.g. C:/projects/foo"
+                      value={repoPath}
+                      onChange={(e) => setRepoPath(e.target.value)}
+                      className="repo-path-input"
+                    />
+                    <button type="button" onClick={handleAddRepo} className="repo-add-btn">➕ Add</button>
+                  </div>
+
+                  <div className="repo-list">
+                    {repos.map((repo) => (
+                      <div
+                        key={repo.id}
+                        className={`repo-item ${currentRepoId === repo.id ? 'active' : ''}`}
+                        onClick={() => handleSwitchRepo(repo.id)}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        <span className="repo-name">📦 {repo.name}</span>
+                        <span className="repo-meta">
+                          {repo.indexed ? '✅ indexed' : '⏳ not indexed'}
+                        </span>
+                      </div>
+                    ))}
+                    {repos.length === 0 && (
+                      <div className="repo-empty">No repositories yet. Add a server path above.</div>
+                    )}
+                  </div>
                 </div>
               </div>
 

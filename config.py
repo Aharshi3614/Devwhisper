@@ -248,6 +248,8 @@ LLM_BASE_URL: Final[str] = os.getenv("LLM_BASE_URL", DEFAULT_LLM_BASE_URL)
 LLM_MODEL: Final[str | None] = os.getenv("LLM_MODEL")
 """Custom LLM model name (optional override)."""
 
+OUTPUT_DIRECTORY: Final = "./output"
+"""Directory storing each repository's index artifacts: BM25, cache, and registry."""
 
 def validate_config() -> None:
     """Validate runtime configuration values and print actionable errors if invalid."""
@@ -274,6 +276,7 @@ validate_config()
 
 
 __all__ = [
+    "OUTPUT_DIRECTORY",
     "EMBEDDING_MODEL_NAME",
     "EMBEDDING_DIMENSIONS",
     "EMBEDDING_VERSION",
