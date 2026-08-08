@@ -32,6 +32,7 @@ import os
 import uuid
 import sys
 import json
+import time
 from datetime import datetime, timezone
 
 from pathspec import PathSpec
@@ -322,6 +323,15 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
         "message": "Starting (Dry Run)..." if dry_run else "Starting...",
     })
 
+    # ── Issue #224: Track indexing duration for the scan summary API ──
+    # Captured at the start of the run and stamped into the persisted
+    # _metadata block so /index/summary can report it later, even after
+    # the in-memory progress_state has been reset by a subsequent job.
+    indexing_started_at = time.monotonic()
+    indexing_started_at_wall = datetime.now(timezone.utc)
+
+  
+
     # ── Collect .gitignore rules (root + nested) ────────────────────────
     gitignore_rules = load_gitignore_rules(directory)
 
@@ -501,13 +511,20 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
             logger.info("Dependencies: %s", ", ".join(dep_summary["all_dependencies"]))
 
         # ── Save cache metadata ──────────────────────────────────────────
+        # Issue #224: include indexing_duration_seconds so /index/summary
+        # can surface how long the latest scan took, even for historical runs.
+        indexing_duration_seconds = round(time.monotonic() - indexing_started_at, 3)
+
         cache_data["_metadata"] = {
             "repository_name": os.path.basename(os.path.abspath(directory)),
             "indexing_timestamp": datetime.now(timezone.utc).isoformat(),
+            "indexing_started_at": indexing_started_at_wall.isoformat(),
+            "indexing_duration_seconds": indexing_duration_seconds,
             "indexed_file_count": len(cache_data),
+            "skipped_file_count": len(skipped_files),
+            "skipped_files": skipped_files,
             "embedding_model": EMBEDDING_MODEL_NAME,
             "embedding_version": EMBEDDING_VERSION,
-            "skipped_files": skipped_files,
             "max_file_size_mb": MAX_FILE_SIZE_MB,
             "dependency_summary": dep_summary,
         }
@@ -521,8 +538,11 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
             "running": False,
             "percent": 100,
             "status": "done",
-            "message": f"Indexing complete. {total_files} file(s) processed{skip_summary}{dep_msg}, {total_uploaded} chunks uploaded.",
-            "dependency_summary": dep_summary,
+            "message": f"Indexing complete. {total_files} file(s) processed{skip_summary}, {total_uploaded} chunks uploaded.",
+            "indexed_file_count": total_files,
+            "skipped_count": len(skipped_files),
+            "indexing_duration_seconds": indexing_duration_seconds,
+            "indexing_timestamp": cache_data["_metadata"]["indexing_timestamp"],
         })
 
     except Exception as e:
