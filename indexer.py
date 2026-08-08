@@ -471,6 +471,13 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
                 }, f)
             print(f"BM25 index saved ({len(all_chunks)} chunks) to {target_bm25}")
 
+        # ── Dependency Summary ───────────────────────────────────────────
+        from dependency_parser import generate_dependency_summary
+        dep_summary = generate_dependency_summary(directory)
+        logger.info("Detected %d unique dependencies in repository %s", dep_summary["total_unique_dependencies"], repo_name)
+        if dep_summary["all_dependencies"]:
+            logger.info("Dependencies: %s", ", ".join(dep_summary["all_dependencies"]))
+
         # ── Save cache metadata ──────────────────────────────────────────
         cache_data["_metadata"] = {
             "repository_name": os.path.basename(os.path.abspath(directory)),
@@ -480,17 +487,20 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
             "embedding_version": EMBEDDING_VERSION,
             "skipped_files": skipped_files,
             "max_file_size_mb": MAX_FILE_SIZE_MB,
+            "dependency_summary": dep_summary,
         }
 
         with open(target_cache, "w", encoding="utf-8") as f:
             json.dump(cache_data, f, indent=2, ensure_ascii=False)
 
         skip_summary = f", {len(skipped_files)} file(s) skipped" if skipped_files else ""
+        dep_msg = f", {dep_summary['total_unique_dependencies']} dependencies detected" if dep_summary["total_unique_dependencies"] > 0 else ""
         progress_state.update({
             "running": False,
             "percent": 100,
             "status": "done",
-            "message": f"Indexing complete. {total_files} file(s) processed{skip_summary}, {total_uploaded} chunks uploaded.",
+            "message": f"Indexing complete. {total_files} file(s) processed{skip_summary}{dep_msg}, {total_uploaded} chunks uploaded.",
+            "dependency_summary": dep_summary,
         })
 
     except Exception as e:

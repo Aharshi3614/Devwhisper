@@ -134,29 +134,37 @@ def _matches_metadata_filter(payload: dict, metadata_filter: dict | None) -> boo
     return True
 
 
-def _build_qdrant_filter(metadata_filter: dict | None) -> qdrant_models.Filter | None:
+def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[str] | None = None) -> qdrant_models.Filter | None:
     """Convert key-value dictionary metadata filters to a Qdrant Filter object."""
-    if not metadata_filter:
+    if not metadata_filter and not repository_names:
         return None
 
     conditions = []
     if metadata_filter:
         for key, value in metadata_filter.items():
             conditions.append(
-                vector_store.qdrant_models.FieldCondition(
+                qdrant_models.FieldCondition(
                     key=key,
-                    match=vector_store.qdrant_models.MatchValue(value=value),
+                    match=qdrant_models.MatchValue(value=value),
                 )
             )
     
     if repository_names:
-        # Support filtering by repository field in payload if multiple repos are provided
-        conditions.append(
-            qdrant_models.FieldCondition(
-                key=key,
-                match=qdrant_models.MatchValue(value=value),
+        if len(repository_names) == 1:
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="repository",
+                    match=qdrant_models.MatchValue(value=repository_names[0]),
+                )
             )
-        )
+        else:
+            # If multiple repos, match any repo in repository_names
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="repository",
+                    match=qdrant_models.MatchAny(any=repository_names),
+                )
+            )
     return qdrant_models.Filter(must=conditions) if conditions else None
 
 
@@ -371,12 +379,10 @@ def retrieve(
     qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
 
     qdrant_result = client.query_points(
-        collection_name=QDRANT_COLLECTION_NAME,
+        collection_name=target_collection,
         query=vector,
         query_filter=qdrant_filter,
         limit=query_limit,
-        query_filter=qdrant_filter,
-        collection_name=target_collection,
         score_threshold=QDRANT_SIMILARITY_THRESHOLD,
     )
 

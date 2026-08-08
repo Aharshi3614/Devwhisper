@@ -490,11 +490,13 @@ def get_statistics():
 
         metadata = get_repository_metadata(target_cache)
         indexed_file_count = metadata.get("indexed_file_count", 0)
+        dependency_summary = metadata.get("dependency_summary", {})
 
         return {
             "indexed_file_count": indexed_file_count,
             "chunk_count": chunk_count,
             "collection_info": collection_dict,
+            "dependency_summary": dependency_summary,
         }
     except Exception:
         logger.error("Failed to retrieve statistics", exc_info=True)
