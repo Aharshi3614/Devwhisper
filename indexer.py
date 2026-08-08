@@ -286,36 +286,22 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     return chunks
 
 
-def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa: C901
+def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = False) -> dict | None:  # noqa: C901
     """
     Main indexing pipeline: scan, chunk, embed, and store codebase into Qdrant + BM25.
 
-    Supports incremental mode via `--incremental` CLI flag, which skips
-    files whose mtime and hash match the previous run (stored in .index_cache.json).
+    Supports incremental mode via `--incremental` CLI flag, and dry run mode via
+    `--dry-run` CLI flag or `dry_run=True` parameter.
 
-    Steps:
-      1. Load previous cache (if incremental).
-      2. Load .gitignore rules and collect eligible files (skip gitignored,
-         oversized, and unreadable files).
-      3. (Re)create Qdrant collection (unless incremental and exists).
-      4. For each file: chunk → embed → build PointStruct → batch upsert.
-      5. Build BM25 index from all chunks.
-      6. Save cache metadata (.index_cache.json).
-
-    Args:
-        directory: Root directory containing the codebase to index.
-        repo_id: Optional per-repository id. When given, index artifacts are
-            stored under per-repository names (repositories.py); when None,
-            the legacy global names are used.
-
-    Side effects:
-      - Updates global `progress_state`.
-      - Writes to Qdrant collection.
-      - Writes .bm_index.pkl (BM25 index).
-      - Writes .index_cache.json (metadata + file hashes).
+    In dry run mode:
+      - Validates repository and scans indexable files.
+      - Calculates chunk & symbol statistics without creating embeddings or uploading vectors.
+      - Returns and logs detailed dry-run summary without modifying vector store or disk caches.
     """
+    if "--dry-run" in sys.argv:
+        dry_run = True
+
     # ── Resolve per-repository artifact names ──────────────────────────
-    # repo_id given → derive names from it; None → legacy global names.
     if repo_id is not None:
         target_collection = repositories.collection_name(repo_id)
         target_bm25 = repositories.bm25_path(repo_id)
@@ -325,8 +311,6 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
         target_bm25 = BM25_INDEX_PATH
         target_cache = ".index_cache.json"
 
-    # Display name stamped on every chunk/payload so shared-index queries can
-    # filter by repository (matches the `name` stored in the registry).
     repo_name = os.path.basename(os.path.normpath(directory))
 
     progress_state.update({
@@ -336,7 +320,7 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
         "percent": 0,
         "current_file": "",
         "status": "running",
-        "message": "Starting...",
+        "message": "Starting (Dry Run)..." if dry_run else "Starting...",
     })
 
     # ── Issue #224: Track indexing duration for the scan summary API ──
@@ -366,8 +350,9 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
                     )
 
         # ── Prepare Qdrant collection ─────────────────────────────────────
-        if "--incremental" not in sys.argv or not client.collection_exists(target_collection):
-            create_collection(target_collection)
+        if not dry_run:
+            if "--incremental" not in sys.argv or not client.collection_exists(target_collection):
+                create_collection(target_collection)
 
         points = []
         total_uploaded = 0
@@ -439,21 +424,58 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
                 msg += f", {sym_count} symbols"
             print(msg)
 
-            for chunk in chunks:
-                chunk["repository"] = repo_name
-                vector = embedder.encode(chunk["text"]).tolist()
-                unique_str = f"{path}_{chunk['start_line']}"
-                stable_id = str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
-                points.append(
-                    PointStruct(
-                        id=stable_id,
-                        vector=vector,
-                        payload=chunk,
+            if not dry_run:
+                for chunk in chunks:
+                    chunk["repository"] = repo_name
+                    vector = embedder.encode(chunk["text"]).tolist()
+                    unique_str = f"{path}_{chunk['start_line']}"
+                    stable_id = str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
+                    points.append(
+                        PointStruct(
+                            id=stable_id,
+                            vector=vector,
+                            payload=chunk,
+                        )
                     )
-                )
 
-            if idx % INDEX_FILE_BATCH_SIZE == 0 or idx == total_files:
-                upsert_pending(idx)
+                if idx % INDEX_FILE_BATCH_SIZE == 0 or idx == total_files:
+                    upsert_pending(idx)
+
+        total_chunks = 0
+        total_symbols = 0
+        for p, data in cache_data.items():
+            total_symbols += len(data.get("symbols", []))
+
+        if dry_run:
+            # Aggregate chunk stats across files
+            for p in all_files:
+                file_chunks = get_file_chunks(p)
+                total_chunks += len(file_chunks)
+
+            dry_run_summary = {
+                "dry_run": True,
+                "repository": repo_name,
+                "total_files": total_files,
+                "skipped_files_count": len(skipped_files),
+                "estimated_chunks": total_chunks,
+                "total_symbols": total_symbols,
+                "skipped_files": skipped_files,
+                "vectors_uploaded": 0,
+            }
+            logger.info("Indexing Dry Run Summary for %s: %s", repo_name, dry_run_summary)
+            print(
+                f"\n[DRY RUN COMPLETE] Evaluated {total_files} file(s), "
+                f"{total_chunks} chunk(s), {total_symbols} symbol(s), "
+                f"{len(skipped_files)} skipped file(s). No vectors were uploaded."
+            )
+            progress_state.update({
+                "running": False,
+                "percent": 100,
+                "status": "done",
+                "message": f"Dry run complete. {total_files} file(s) evaluated ({total_chunks} chunks previewed, 0 vectors uploaded).",
+                "dry_run_summary": dry_run_summary,
+            })
+            return dry_run_summary
 
         if total_uploaded:
             print(
@@ -481,6 +503,13 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
                 }, f)
             print(f"BM25 index saved ({len(all_chunks)} chunks) to {target_bm25}")
 
+        # ── Dependency Summary ───────────────────────────────────────────
+        from dependency_parser import generate_dependency_summary
+        dep_summary = generate_dependency_summary(directory)
+        logger.info("Detected %d unique dependencies in repository %s", dep_summary["total_unique_dependencies"], repo_name)
+        if dep_summary["all_dependencies"]:
+            logger.info("Dependencies: %s", ", ".join(dep_summary["all_dependencies"]))
+
         # ── Save cache metadata ──────────────────────────────────────────
         # Issue #224: include indexing_duration_seconds so /index/summary
         # can surface how long the latest scan took, even for historical runs.
@@ -497,12 +526,14 @@ def index_directory(directory: str, repo_id: str | None = None) -> None:  # noqa
             "embedding_model": EMBEDDING_MODEL_NAME,
             "embedding_version": EMBEDDING_VERSION,
             "max_file_size_mb": MAX_FILE_SIZE_MB,
+            "dependency_summary": dep_summary,
         }
 
         with open(target_cache, "w", encoding="utf-8") as f:
             json.dump(cache_data, f, indent=2, ensure_ascii=False)
 
         skip_summary = f", {len(skipped_files)} file(s) skipped" if skipped_files else ""
+        dep_msg = f", {dep_summary['total_unique_dependencies']} dependencies detected" if dep_summary["total_unique_dependencies"] > 0 else ""
         progress_state.update({
             "running": False,
             "percent": 100,

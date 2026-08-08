@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-do
 import HistoryPanel from './components/HistoryPanel.jsx'
 import ResponseOutput from './components/ResponseOutput.jsx'
 import MicButton from './components/MicButton.jsx'
+import ProcessingTimeline from './components/ProcessingTimeline.jsx'
 import './App.css'
 import SettingsPanel from './components/SettingsPanel.jsx'
 
@@ -154,6 +155,22 @@ function Home() {
     }
   }, [queryText, sessionId])
 
+  // Timeline stages state for Issue #221
+  const INITIAL_STAGES = [
+    { id: 'request_received', label: 'Request Received', status: 'pending' },
+    { id: 'retrieval', label: 'Code Context Retrieval', status: 'pending' },
+    { id: 'generation', label: 'LLM Generation', status: 'pending' },
+    { id: 'completion', label: 'Response Completed', status: 'pending' },
+  ]
+  const [timelineStages, setTimelineStages] = useState([])
+
+  const updateStage = (stageId, status, detail = '') => {
+    if (!isMountedRef.current) return
+    setTimelineStages((prev) =>
+      prev.map((st) => (st.id === stageId ? { ...st, status, detail } : st))
+    )
+  }
+
   // Submit Query Function
   const submitQueryText = useCallback(async (textToSubmit) => {
     const currentQuery = textToSubmit || queryText
@@ -171,6 +188,12 @@ function Home() {
     setLoading(true)
     setError(null)
     setResponse('')
+    setTimelineStages([
+      { id: 'request_received', label: 'Request Received', status: 'completed', detail: 'Query parsed' },
+      { id: 'retrieval', label: 'Code Context Retrieval', status: 'in_progress', detail: 'Searching codebase...' },
+      { id: 'generation', label: 'LLM Generation', status: 'pending' },
+      { id: 'completion', label: 'Response Completed', status: 'pending' },
+    ])
 
     try {
       const responseStream = await fetch('/stream', {
@@ -194,6 +217,13 @@ function Home() {
         throw new Error('Readable stream not supported or empty body returned.')
       }
 
+      setTimelineStages([
+        { id: 'request_received', label: 'Request Received', status: 'completed' },
+        { id: 'retrieval', label: 'Code Context Retrieval', status: 'completed', detail: 'Context retrieved' },
+        { id: 'generation', label: 'LLM Generation', status: 'in_progress', detail: 'Streaming tokens...' },
+        { id: 'completion', label: 'Response Completed', status: 'pending' },
+      ])
+
       const reader = responseStream.body.getReader()
       const decoder = new TextDecoder()
       let done = false
@@ -210,6 +240,14 @@ function Home() {
           }
         }
       }
+
+      setTimelineStages([
+        { id: 'request_received', label: 'Request Received', status: 'completed' },
+        { id: 'retrieval', label: 'Code Context Retrieval', status: 'completed' },
+        { id: 'generation', label: 'LLM Generation', status: 'completed' },
+        { id: 'completion', label: 'Response Completed', status: 'completed', detail: 'Finished' },
+      ])
+
     } catch (err) {
       if (err.name === 'AbortError') {
         return
@@ -218,9 +256,18 @@ function Home() {
       if (isMountedRef.current) {
         try {
           await handleWebhookFallback(currentQuery)
+          setTimelineStages([
+            { id: 'request_received', label: 'Request Received', status: 'completed' },
+            { id: 'retrieval', label: 'Code Context Retrieval', status: 'completed' },
+            { id: 'generation', label: 'LLM Generation', status: 'completed' },
+            { id: 'completion', label: 'Response Completed', status: 'completed' },
+          ])
         } catch (fallbackErr) {
           if (isMountedRef.current) {
             setError(fallbackErr.message || 'Failed to reach the DevWhisper backend.')
+            setTimelineStages((prev) =>
+              prev.map((st) => (st.status === 'in_progress' ? { ...st, status: 'failed' } : st))
+            )
           }
         }
       }
@@ -557,6 +604,9 @@ function Home() {
             </div>
           </div>
         )}
+
+        {/* Processing timeline for intermediate progress */}
+        <ProcessingTimeline stages={timelineStages} />
 
         {/* Response Rendering */}
         <ResponseOutput response={response} loading={loading} error={error} />

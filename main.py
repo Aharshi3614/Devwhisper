@@ -122,6 +122,8 @@ ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "").strip()
 # Serve static files (e.g., frontend assets) from the ./static directory.
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+from di import get_session_manager, get_indexing_queue, get_jobs_history
+
 # ---------------------------------------------------------------------------
 # Per-session memory store
 # ---------------------------------------------------------------------------
@@ -131,10 +133,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 MAX_SESSIONS = 100
 MAX_HISTORY_PER_SESSION = 5
 
-session_manager = SessionManager(
-    max_sessions=MAX_SESSIONS,
-    max_history_per_session=MAX_HISTORY_PER_SESSION,
-)
+session_manager = get_session_manager(max_sessions=MAX_SESSIONS, max_history_per_session=MAX_HISTORY_PER_SESSION)
 
 # Backward-compatible aliases used by existing endpoints and tests.
 conversation_sessions = session_manager.sessions
@@ -154,8 +153,8 @@ _reindex_last_checked_at = 0.0
 # ---------------------------------------------------------------------------
 # Indexing Queue & Worker
 # ---------------------------------------------------------------------------
-indexing_queue = queue.Queue()
-jobs_history = []
+indexing_queue = get_indexing_queue()
+jobs_history = get_jobs_history()
 
 def queue_worker():
     global progress_state
@@ -205,7 +204,7 @@ def queue_worker():
                     directory = repositories.get_repo_path(job.get("repo_id")) or SAMPLE_CODEBASE_DIRECTORY
 
                 # Run the actual indexing pipeline
-                index_directory(directory, repo_id=job.get("repo_id"))
+                index_directory(directory, repo_id=job.get("repo_id"), dry_run=job.get("dry_run", False))
 
                 job["status"] = "completed"
                 job["percent"] = 100
@@ -491,11 +490,13 @@ def get_statistics():
 
         metadata = get_repository_metadata(target_cache)
         indexed_file_count = metadata.get("indexed_file_count", 0)
+        dependency_summary = metadata.get("dependency_summary", {})
 
         return {
             "indexed_file_count": indexed_file_count,
             "chunk_count": chunk_count,
             "collection_info": collection_dict,
+            "dependency_summary": dependency_summary,
         }
     except Exception:
         logger.error("Failed to retrieve statistics", exc_info=True)
@@ -653,18 +654,19 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
 
 
 @app.post("/index/start")
-def start_indexing():
+def start_indexing(dry_run: bool = False):
     """
-    Queue codebase indexing.
+    Queue codebase indexing (supports dry_run=True to preview stats without uploading vectors).
     """
     if progress_state.get("running"):
         return error_response(409, "Indexing is already in progress.")
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
-        "type": "reindex",
-        "name": "Manual Re-index",
+        "type": "dry_run" if dry_run else "reindex",
+        "name": "Manual Dry Run" if dry_run else "Manual Re-index",
         "repo_id": repositories.get_current_repo_id(),
+        "dry_run": dry_run,
         "status": "pending",
         "percent": 0,
         "message": "Pending in queue...",
@@ -675,7 +677,7 @@ def start_indexing():
     }
     jobs_history.append(job)
     indexing_queue.put(job)
-    return {"status": "started", "message": "Manual re-indexing job queued.", "job_id": job_id}
+    return {"status": "started", "message": "Manual re-indexing job queued.", "job_id": job_id, "dry_run": dry_run}
 
 
 @app.post("/index/upload")

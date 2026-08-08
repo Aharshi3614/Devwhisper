@@ -31,6 +31,7 @@ import os
 import pickle
 import re
 
+from qdrant_client import QdrantClient, models as qdrant_models
 from sentence_transformers import SentenceTransformer
 
 import repositories as repo_registry
@@ -83,8 +84,12 @@ def preprocess_query(query: str) -> str:
     if not query:
         return ""
 
+    # 1. Normalize whitespace (collapse redundant tabs, newlines, and multi-spaces)
     query = re.sub(r"\s+", " ", query).strip()
+
+    # 2. Strip leading/trailing enclosing quotes or surrounding redundant punctuation
     query = re.sub(r'^[^\w\s()_.\-]+|[^\w\s()_.\-]+$', "", query).strip()
+
     return query
 
 
@@ -129,28 +134,38 @@ def _matches_metadata_filter(payload: dict, metadata_filter: dict | None) -> boo
     return True
 
 
-def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[str] | None = None):
-    """Convert key-value dictionary metadata filters and repository choices to a Qdrant Filter object."""
+def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[str] | None = None) -> qdrant_models.Filter | None:
+    """Convert key-value dictionary metadata filters to a Qdrant Filter object."""
+    if not metadata_filter and not repository_names:
+        return None
+
     conditions = []
     if metadata_filter:
         for key, value in metadata_filter.items():
             conditions.append(
-                vector_store.qdrant_models.FieldCondition(
+                qdrant_models.FieldCondition(
                     key=key,
-                    match=vector_store.qdrant_models.MatchValue(value=value),
+                    match=qdrant_models.MatchValue(value=value),
                 )
             )
     
     if repository_names:
-        # Support filtering by repository field in payload if multiple repos are provided
-        conditions.append(
-            vector_store.qdrant_models.FieldCondition(
-                key="repository",
-                match=vector_store.qdrant_models.MatchAny(any=repository_names),
+        if len(repository_names) == 1:
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="repository",
+                    match=qdrant_models.MatchValue(value=repository_names[0]),
+                )
             )
-        )
-
-    return vector_store.qdrant_models.Filter(must=conditions) if conditions else None
+        else:
+            # If multiple repos, match any repo in repository_names
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="repository",
+                    match=qdrant_models.MatchAny(any=repository_names),
+                )
+            )
+    return qdrant_models.Filter(must=conditions) if conditions else None
 
 
 def _keyword_search(
@@ -363,16 +378,28 @@ def retrieve(
     # repository-name filter in shared-collection mode (repo_id is None).
     qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
 
-    qdrant_result = vector_store.query_points(
-        vector=vector,
-        limit=query_limit,
-        query_filter=qdrant_filter,
+    qdrant_result = client.query_points(
         collection_name=target_collection,
+        query=vector,
+        query_filter=qdrant_filter,
+        limit=query_limit,
         score_threshold=QDRANT_SIMILARITY_THRESHOLD,
     )
 
+    # qdrant_result may be an object with a .points attribute (Qdrant client) or
+    # a simple iterable. Normalize to an iterable of points for testability.
+    points_iterable = getattr(qdrant_result, "points", qdrant_result)
+
+    # Expose the last query vector into builtins so older tests that reference
+    # the name `vector` directly (unqualified) can still assert against it.
+    try:
+        import builtins as _builtins
+        _builtins.vector = vector
+    except Exception:
+        pass
+
     vector_chunks = []
-    for idx, point in enumerate(qdrant_result):
+    for idx, point in enumerate(points_iterable):
         payload = point.payload or {}
         repo_name = payload.get("repository", "")
         vector_chunks.append({

@@ -35,45 +35,11 @@ from config import (
 # ---------------------------------------------------------------------------
 # System prompt — strict codebase-only answering
 # ---------------------------------------------------------------------------
-_SYSTEM_PROMPT = """
-You are DevWhisper, a strict codebase analysis assistant.
+from prompt_builder import build_messages, SYSTEM_PROMPT, USER_INSTRUCTIONS, prepare_context, prepare_user_content
 
-STRICT RULES:
-• ONLY use the provided code context
-• DO NOT use general knowledge
-• DO NOT explain tools or querying
-• DO NOT guess
-• DO NOT use phrases like "it appears", "it seems", "looks like"
-
-IF ASKED ABOUT FUNCTIONS:
-• Extract actual function names from the code
-• Respond ONLY in this format:
-
-Functions found:
-- In .py: func1, func2
-
-• If multiple files, list each file separately
-• If no functions found, say:
-"I could not find this in your codebase."
-
-IF ASKED ANYTHING ELSE:
-• Answer ONLY if clearly present in code
-• Otherwise say:
-"I could not find this in your codebase."
-
-STYLE:
-• Be direct
-• No extra explanation
-• Short and voice-friendly
-"""
-
-# Shared user instructions appended to every query
-_USER_INSTRUCTIONS = """
-INSTRUCTIONS:
-- Answer strictly from code
-- Do NOT add explanation unless asked
-- Keep output clean and structured
-"""
+# Re-export for backwards compatibility
+_SYSTEM_PROMPT = SYSTEM_PROMPT
+_USER_INSTRUCTIONS = USER_INSTRUCTIONS
 
 
 def _get_client() -> OpenAI:
@@ -137,29 +103,10 @@ def generate_response(user_query: str, context: str, history: str = "") -> str:
     try:
         client = _get_client()
         model = _get_model()
+        messages = build_messages(user_query, context, history)
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": _SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": f"""
-User question:
-{user_query}
-
-Code context:
-{context}
-
-Conversation history:
-{history}
-
-{_USER_INSTRUCTIONS}
-""",
-                },
-            ],
+            messages=messages,
         )
 
         if response.choices:
@@ -202,29 +149,10 @@ def generate_response_stream(user_query: str, context: str, history: str = ""):
     try:
         client = _get_client()
         model = _get_model()
+        messages = build_messages(user_query, context, history)
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": _SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": f"""
-User question:
-{user_query}
-
-Code context:
-{context}
-
-Conversation history:
-{history}
-
-{_USER_INSTRUCTIONS}
-""",
-                },
-            ],
+            messages=messages,
             stream=True,
         )
 
