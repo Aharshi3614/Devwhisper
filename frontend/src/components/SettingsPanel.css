@@ -426,6 +426,14 @@ body.theme-dark .settings-footer,
   font-weight: 500;
 }
 
+.progress-circular-info {
+  color: #d32f2f;
+  font-weight: 600;
+  margin-top: 4px;
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
 .status-running { color: #ff9800; }
 .status-done { color: #4caf50; }
 .status-error { color: #f44336; }

@@ -39,6 +39,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
 
+from circular_import_checker import parse_import, check_import_circular
 from config import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_MODEL_NAME,
@@ -89,6 +90,7 @@ progress_state = {
     "message": "",
     "skipped": [],
     "skipped_count": 0,
+    "circular_imports": [],
 }
 
 
@@ -345,6 +347,8 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
                 create_collection(target_collection)
 
         points = []
+        python_import = {}
+        import_circular = []
         total_uploaded = 0
         cache_data = {}
 
@@ -377,6 +381,7 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
         # ── Process each file ────────────────────────────────────────────
         for idx, path in enumerate(all_files, start=1):
             file = os.path.basename(path)
+            python_import.update(parse_import(path, file))
             progress_state.update({
                 "current": idx,
                 "percent": round((idx / total_files) * 100) if total_files else 100,
@@ -466,6 +471,12 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
                 "dry_run_summary": dry_run_summary,
             })
             return dry_run_summary
+
+        import_circular = check_import_circular(python_import)
+        progress_state["circular_imports"] = import_circular
+
+        if import_circular:
+            logger.warning(f"circular imports:{import_circular}")
 
         if total_uploaded:
             print(

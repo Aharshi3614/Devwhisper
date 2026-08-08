@@ -52,7 +52,7 @@ def test_retrieve_formats_ranked_results(monkeypatch):
     mock_embedder.encode.assert_called_once_with("How is the data prepared")
     mock_client.query_points.assert_called_once_with(
         collection_name="devwhisper",
-        query=vector,
+        query=[0.1, 0.2, 0.3],
         query_filter=None,
         limit=2,
         score_threshold=0.0,
