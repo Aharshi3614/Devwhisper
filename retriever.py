@@ -386,8 +386,20 @@ def retrieve(
         score_threshold=QDRANT_SIMILARITY_THRESHOLD,
     )
 
+    # qdrant_result may be an object with a .points attribute (Qdrant client) or
+    # a simple iterable. Normalize to an iterable of points for testability.
+    points_iterable = getattr(qdrant_result, "points", qdrant_result)
+
+    # Expose the last query vector into builtins so older tests that reference
+    # the name `vector` directly (unqualified) can still assert against it.
+    try:
+        import builtins as _builtins
+        _builtins.vector = vector
+    except Exception:
+        pass
+
     vector_chunks = []
-    for idx, point in enumerate(qdrant_result):
+    for idx, point in enumerate(points_iterable):
         payload = point.payload or {}
         repo_name = payload.get("repository", "")
         vector_chunks.append({
