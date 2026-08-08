@@ -204,7 +204,7 @@ def queue_worker():
                     directory = repositories.get_repo_path(job.get("repo_id")) or SAMPLE_CODEBASE_DIRECTORY
 
                 # Run the actual indexing pipeline
-                index_directory(directory, repo_id=job.get("repo_id"))
+                index_directory(directory, repo_id=job.get("repo_id"), dry_run=job.get("dry_run", False))
 
                 job["status"] = "completed"
                 job["percent"] = 100
@@ -654,18 +654,19 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
 
 
 @app.post("/index/start")
-def start_indexing():
+def start_indexing(dry_run: bool = False):
     """
-    Queue codebase indexing.
+    Queue codebase indexing (supports dry_run=True to preview stats without uploading vectors).
     """
     if progress_state.get("running"):
         return error_response(409, "Indexing is already in progress.")
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
-        "type": "reindex",
-        "name": "Manual Re-index",
+        "type": "dry_run" if dry_run else "reindex",
+        "name": "Manual Dry Run" if dry_run else "Manual Re-index",
         "repo_id": repositories.get_current_repo_id(),
+        "dry_run": dry_run,
         "status": "pending",
         "percent": 0,
         "message": "Pending in queue...",
@@ -676,7 +677,7 @@ def start_indexing():
     }
     jobs_history.append(job)
     indexing_queue.put(job)
-    return {"status": "started", "message": "Manual re-indexing job queued.", "job_id": job_id}
+    return {"status": "started", "message": "Manual re-indexing job queued.", "job_id": job_id, "dry_run": dry_run}
 
 
 @app.post("/index/upload")
