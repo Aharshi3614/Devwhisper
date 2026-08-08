@@ -121,6 +121,8 @@ ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "").strip()
 # Serve static files (e.g., frontend assets) from the ./static directory.
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+from di import get_session_manager, get_indexing_queue, get_jobs_history
+
 # ---------------------------------------------------------------------------
 # Per-session memory store
 # ---------------------------------------------------------------------------
@@ -130,10 +132,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 MAX_SESSIONS = 100
 MAX_HISTORY_PER_SESSION = 5
 
-session_manager = SessionManager(
-    max_sessions=MAX_SESSIONS,
-    max_history_per_session=MAX_HISTORY_PER_SESSION,
-)
+session_manager = get_session_manager(max_sessions=MAX_SESSIONS, max_history_per_session=MAX_HISTORY_PER_SESSION)
 
 # Backward-compatible aliases used by existing endpoints and tests.
 conversation_sessions = session_manager.sessions
@@ -153,8 +152,8 @@ _reindex_last_checked_at = 0.0
 # ---------------------------------------------------------------------------
 # Indexing Queue & Worker
 # ---------------------------------------------------------------------------
-indexing_queue = queue.Queue()
-jobs_history = []
+indexing_queue = get_indexing_queue()
+jobs_history = get_jobs_history()
 
 def queue_worker():
     global progress_state
