@@ -1,0 +1,93 @@
+.processing-timeline {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--code-bg, #1e1e2e);
+  border: 1px solid var(--border, #313244);
+  border-radius: 12px;
+  text-align: left;
+}
+
+.timeline-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #a6adc8);
+  margin-bottom: 12px;
+}
+
+.timeline-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline-stage {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.stage-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+
+.timeline-stage.completed .stage-icon {
+  background: rgba(166, 227, 161, 0.2);
+  color: #a6e3a1;
+}
+
+.timeline-stage.in-progress .stage-icon {
+  background: rgba(137, 180, 250, 0.2);
+  color: #89b4fa;
+}
+
+.timeline-stage.failed .stage-icon {
+  background: rgba(243, 139, 168, 0.2);
+  color: #f38ba8;
+}
+
+.timeline-stage.pending .stage-icon {
+  color: var(--text-muted, #6c7086);
+}
+
+.spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #89b4fa;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.stage-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.stage-label {
+  font-weight: 500;
+  color: var(--text, #cdd6f4);
+}
+
+.timeline-stage.pending .stage-label {
+  color: var(--text-muted, #6c7086);
+}
+
+.stage-detail {
+  font-size: 0.8rem;
+  color: var(--text-muted, #a6adc8);
+}
