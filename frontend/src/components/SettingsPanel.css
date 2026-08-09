@@ -434,6 +434,18 @@ body.theme-dark .settings-footer,
   word-break: break-word;
 }
 
+.progress-chunk-stats {
+  color: inherit;
+  margin-top: 6px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  opacity: 0.95;
+}
+
+.chunk-stat-detail {
+  opacity: 0.8;
+}
+
 .status-running { color: #ff9800; }
 .status-done { color: #4caf50; }
 .status-error { color: #f44336; }
