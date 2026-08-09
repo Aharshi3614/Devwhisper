@@ -260,32 +260,165 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
     return chunks
 
 
-def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
-    """Return all indexing chunks for *filepath*.
+def _chunk_source_region(
+    lines: list[str],
+    start_line: int,
+    end_line: int,
+    chunk_size: int,
+    base_metadata: dict | None = None,
+) -> list[dict]:
+    """Chunk one bounded source region without crossing its boundaries.
 
-    For Python files this includes both AST-extracted symbols and
-    traditional line-based chunks. For other supported extensions only
-    line-based chunks are returned.
+    ``start_line`` and ``end_line`` are one-based inclusive line numbers in
+    the original file.  The helper applies the configured overlap only inside
+    that region, so chunks belonging to one function/class can never spill
+    into a neighbouring symbol.
     """
+    if chunk_size <= INDEX_CHUNK_OVERLAP:
+        raise ValueError("chunk_size must be greater than INDEX_CHUNK_OVERLAP")
+
+    if end_line < start_line:
+        return []
+
+    region = lines[start_line - 1:end_line]
+    step = chunk_size - INDEX_CHUNK_OVERLAP
     chunks = []
 
-    if filepath.lower().endswith(".py"):
-        symbols = extract_symbols_from_file(filepath)
-        for sym in symbols:
-            chunks.append({
-                "text": sym.source,
-                "file": os.path.basename(filepath),
-                "start_line": sym.start_line,
-                "end_line": sym.end_line,
-                "symbol_name": sym.name,
-                "symbol_type": sym.symbol_type,
-                "parent_class": sym.parent_class,
-                "docstring": sym.docstring,
-                "is_symbol": True,
-            })
+    for offset in range(0, len(region), step):
+        part_lines = region[offset:offset + chunk_size]
+        text = "".join(part_lines)
+        if not text.strip():
+            continue
 
-    line_chunks = chunk_file(filepath, chunk_size=chunk_size)
-    chunks.extend(line_chunks)
+        chunk_start = start_line + offset
+        chunk_end = chunk_start + len(part_lines) - 1
+        payload = {
+            "text": text,
+            "start_line": chunk_start,
+            "end_line": chunk_end,
+        }
+        if base_metadata:
+            payload.update(base_metadata)
+        chunks.append(payload)
+
+        if offset + chunk_size >= len(region):
+            break
+
+    return chunks
+
+
+def _merge_line_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping or adjacent one-based inclusive line ranges."""
+    if not ranges:
+        return []
+
+    merged = []
+    for start, end in sorted(ranges):
+        if not merged or start > merged[-1][1] + 1:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return [(start, end) for start, end in merged]
+
+
+def _module_level_ranges(
+    total_lines: int,
+    symbol_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Return source ranges not occupied by top-level functions/classes."""
+    ranges = []
+    cursor = 1
+
+    for start, end in _merge_line_ranges(symbol_ranges):
+        if cursor < start:
+            ranges.append((cursor, start - 1))
+        cursor = max(cursor, end + 1)
+
+    if cursor <= total_lines:
+        ranges.append((cursor, total_lines))
+
+    return ranges
+
+
+def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
+    """Return semantically bounded indexing chunks for *filepath*.
+
+    Python files use AST symbols as the primary boundaries.  A function,
+    method, or class that fits within ``chunk_size`` stays as one chunk.
+    Oversized symbols are split only inside that symbol, preserving its
+    metadata on every part.  Imports, constants, comments, and other
+    module-level source outside top-level symbols are chunked separately.
+
+    Non-Python files retain the existing overlapping line-based strategy.
+    """
+    if not filepath.lower().endswith(".py"):
+        return chunk_file(filepath, chunk_size=chunk_size)
+
+    if chunk_size <= INDEX_CHUNK_OVERLAP:
+        raise ValueError("chunk_size must be greater than INDEX_CHUNK_OVERLAP")
+
+    try:
+        with open(filepath, "r", errors="ignore") as file_handle:
+            lines = file_handle.readlines()
+    except OSError:
+        return []
+
+    symbols = extract_symbols_from_file(filepath)
+    if not symbols:
+        # Syntax errors or symbol-free Python modules still need indexing.
+        return chunk_file(filepath, chunk_size=chunk_size)
+
+    chunks = []
+    filename = os.path.basename(filepath)
+
+    for sym in symbols:
+        metadata = {
+            "file": filename,
+            "symbol_name": sym.name,
+            "symbol_type": sym.symbol_type,
+            "parent_class": sym.parent_class,
+            "docstring": sym.docstring,
+            "is_symbol": True,
+        }
+        symbol_chunks = _chunk_source_region(
+            lines,
+            sym.start_line,
+            sym.end_line,
+            chunk_size,
+            metadata,
+        )
+        if len(symbol_chunks) > 1:
+            for part, chunk in enumerate(symbol_chunks, start=1):
+                chunk["symbol_part"] = part
+                chunk["symbol_parts"] = len(symbol_chunks)
+        chunks.extend(symbol_chunks)
+
+    # Only top-level definitions/classes define module gaps. Methods and
+    # nested functions are already contained by their parent top-level span.
+    top_level_ranges = [
+        (sym.start_line, sym.end_line)
+        for sym in symbols
+        if sym.parent_class is None
+    ]
+
+    for start_line, end_line in _module_level_ranges(
+        len(lines),
+        top_level_ranges,
+    ):
+        chunks.extend(
+            _chunk_source_region(
+                lines,
+                start_line,
+                end_line,
+                chunk_size,
+                {
+                    "file": filename,
+                    "is_symbol": False,
+                    "chunk_type": "module_context",
+                },
+            )
+        )
+
     return chunks
 
 
