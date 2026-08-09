@@ -467,14 +467,7 @@ async def vapi_webhook(request: Request):
                 cache_put(query, answer)
                 update_memory(session_id, query, answer)
 
-                    results.append({
-                        "toolCallId": tool.get("id", "single"),
-                        "result": answer
-                    })
-
-            return JSONResponse({"results": results})
-
-        return JSONResponse({"status": "ok"})
+        return StreamingResponse(event_generator(), media_type="text/plain")
 
     except Exception:
         logger.error("SERVER ERROR", exc_info=True)
