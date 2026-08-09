@@ -37,6 +37,7 @@ from llm import generate_response, generate_response_stream
 from cache import get as cache_get, put as cache_put
 from handlers import route_command
 from errors import error_response
+from pipeline_validator import PipelineTracker, PipelineStageError
 from indexer import index_directory, progress_state, get_before_cache_data, collect_indexable_files, \
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
@@ -404,38 +405,69 @@ async def vapi_webhook(request: Request):
                     if not query:
                         return error_response(400, "Query parameter is required and cannot be empty.")
 
-                    # ── Cache lookup ──────────────────────────────────────
-                    cached = cache_get(query)
-                    if cached is not None:
-                        update_memory(session_id, query, cached)
-                        results.append({
-                            "toolCallId": tool.get("id", "single"),
-                            "result": cached
-                        })
-                        continue
+        # Cache lookup
+        # Issue #227: validate pipeline stage order
+        tracker = PipelineTracker()
+        try:
+            tracker.enter("cache_lookup")
+        except PipelineStageError as e:
+            logger.error("Pipeline stage violation: %s", e)
 
-                    # ── Cache miss: run full pipeline ─────────────────────
-                    context, sources = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
-                    history = get_memory(session_id)
-                    answer = route_command(query, session_id) or generate_response(query, context, history)
+        cached = cache_get(query)
+        if cached is not None:
+            update_memory(session_id, query, cached)
+            try:
+                tracker.enter("cache_insertion")
+            except PipelineStageError as e:
+                logger.error("Pipeline stage violation: %s", e)
 
-                    if answer and answer.strip() and sources:
-                        answer += "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
+            async def cached_generator():
+                yield cached
 
-                    # ── Cache insertion ─────────────────────────────────
-                    if answer and answer.strip():
-                        cache_put(query, answer)
+            return StreamingResponse(cached_generator(), media_type="text/plain")
 
-                    update_memory(session_id, query, answer)
+        # Cache miss: run retrieval
+        try:
+            tracker.enter("retrieval")
+        except PipelineStageError as e:
+            logger.error("Pipeline stage violation: %s", e)
 
-                    results.append({
-                        "toolCallId": tool.get("id", "single"),
-                        "result": answer
-                    })
+        context, sources = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
+        history = get_memory(session_id)
 
-            return JSONResponse({"results": results})
+        try:
+            tracker.enter("generation")
+        except PipelineStageError as e:
+            logger.error("Pipeline stage violation: %s", e)
 
-        return JSONResponse({"status": "ok"})
+        def event_generator():
+            full_response = []
+            for token in generate_response_stream(query, context, history):
+                full_response.append(token)
+                yield token
+
+            try:
+                tracker.enter("post_processing")
+            except PipelineStageError as e:
+                logger.error("Pipeline stage violation: %s", e)
+
+            if sources:
+                sources_str = "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
+                yield sources_str
+                full_response.append(sources_str)
+
+            # Update cache and session history on complete stream
+            try:
+                tracker.enter("cache_insertion")
+            except PipelineStageError as e:
+                logger.error("Pipeline stage violation: %s", e)
+
+            answer = "".join(full_response)
+            if answer and answer.strip():
+                cache_put(query, answer)
+                update_memory(session_id, query, answer)
+
+        return StreamingResponse(event_generator(), media_type="text/plain")
 
     except Exception:
         logger.error("SERVER ERROR", exc_info=True)
