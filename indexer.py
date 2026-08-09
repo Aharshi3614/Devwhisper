@@ -92,6 +92,7 @@ progress_state = {
     "skipped": [],
     "skipped_count": 0,
     "circular_imports": [],
+    "chunk_statistics": {},
 }
 
 
@@ -286,6 +287,53 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     line_chunks = chunk_file(filepath, chunk_size=chunk_size)
     chunks.extend(line_chunks)
     return chunks
+
+
+def compute_chunk_statistics(chunks: list[dict]) -> dict:
+    """Compute aggregate statistics about a list of chunks.
+
+    A chunk's "size" is measured by its number of lines. When there are no
+    chunks, ``largest``/``smallest`` are None and ``average_size`` is 0.
+
+    Args:
+        chunks: List of chunk dicts, each with at least a ``"text"`` key.
+
+    Returns:
+        A dict with keys ``total_chunks``, ``average_size``, ``largest``,
+        and ``smallest``. ``largest``/``smallest`` describe the chunk's
+        file, start_line, and size.
+    """
+    if not chunks:
+        return {
+            "total_chunks": 0,
+            "average_size": 0,
+            "largest": None,
+            "smallest": None,
+        }
+
+    def _size(chunk: dict) -> int:
+        # splitlines() counts real content lines, ignoring a trailing
+        # newline (count("\n") + 1 would count "1\n2\n" as 3 lines).
+        return len(chunk["text"].splitlines())
+
+    sizes = [_size(c) for c in chunks]
+    largest_idx = max(range(len(chunks)), key=lambda i: sizes[i])
+    smallest_idx = min(range(len(chunks)), key=lambda i: sizes[i])
+
+    return {
+        "total_chunks": len(chunks),
+        "average_size": round(sum(sizes) / len(sizes), 1),
+        "largest": {
+            "file": chunks[largest_idx].get("file", ""),
+            "start_line": chunks[largest_idx].get("start_line", 0),
+            "size": sizes[largest_idx],
+        },
+        "smallest": {
+            "file": chunks[smallest_idx].get("file", ""),
+            "start_line": chunks[smallest_idx].get("start_line", 0),
+            "size": sizes[smallest_idx],
+        },
+    }
 
 
 def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = False) -> dict | None:  # noqa: C901
@@ -514,6 +562,12 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
                 }, f)
             print(f"BM25 index saved ({len(all_chunks)} chunks) to {target_bm25}")
 
+        # ── Chunk Statistics (issue #214) ────────────────────────────────
+        # Aggregate chunk counts/sizes after indexing completes and surface
+        # them through progress_state so the frontend can display them.
+        chunk_statistics = compute_chunk_statistics(all_chunks)
+        progress_state["chunk_statistics"] = chunk_statistics
+
         # ── Dependency Summary ───────────────────────────────────────────
         from dependency_parser import generate_dependency_summary
         dep_summary = generate_dependency_summary(directory)
@@ -538,6 +592,7 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
             "embedding_version": EMBEDDING_VERSION,
             "max_file_size_mb": MAX_FILE_SIZE_MB,
             "dependency_summary": dep_summary,
+            "chunk_statistics": chunk_statistics,
         }
 
         with open(target_cache, "w", encoding="utf-8") as f:

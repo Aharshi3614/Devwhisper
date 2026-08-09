@@ -386,6 +386,18 @@ export default function SettingsPanel() {
                           🔄 Circular imports detected: {progress.circular_imports.join('; ')}
                         </div>
                       )}
+                      {progress.chunk_statistics && progress.chunk_statistics.total_chunks > 0 && (
+                        <div className="progress-chunk-stats">
+                          📊 <strong>{progress.chunk_statistics.total_chunks}</strong> chunks · avg{' '}
+                          <strong>{progress.chunk_statistics.average_size}</strong> lines
+                          {progress.chunk_statistics.largest && (
+                            <span className="chunk-stat-detail">
+                              {' '}· largest {progress.chunk_statistics.largest.size} lines ({progress.chunk_statistics.largest.file}:{progress.chunk_statistics.largest.start_line}) ·{' '}
+                              smallest {progress.chunk_statistics.smallest.size} lines ({progress.chunk_statistics.smallest.file}:{progress.chunk_statistics.smallest.start_line})
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 

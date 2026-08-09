@@ -120,8 +120,16 @@ def test_summary_has_all_required_keys(client):
     assert not missing, f"Missing keys: {missing}"
 
 
-def test_summary_empty_state_defaults(client):
+def test_summary_empty_state_defaults(client, monkeypatch):
     """Before any index run, counts are 0 and duration/timestamp are null."""
+    # Force "no persisted metadata" regardless of whether a real
+    # .index_cache.json exists in the project root (e.g. from a manual
+    # index run), so the empty-state contract is deterministic.
+    monkeypatch.setattr(
+        "main.get_repository_metadata", lambda path: {}
+    )
+    import repositories
+    monkeypatch.setattr(repositories, "get_current_repo_id", lambda: None)
     response = client.get("/index/summary")
     body = response.json()
     assert body["indexed_file_count"] == 0
