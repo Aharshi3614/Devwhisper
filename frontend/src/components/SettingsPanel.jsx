@@ -381,6 +381,11 @@ export default function SettingsPanel() {
                           ⚠️ {progress.skipped_count} file(s) skipped.
                         </div>
                       )}
+                      {progress.circular_imports && progress.circular_imports.length > 0 && (
+                        <div className="progress-circular-info">
+                          🔄 Circular imports detected: {progress.circular_imports.join('; ')}
+                        </div>
+                      )}
                     </div>
                   )}
 
