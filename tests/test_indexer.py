@@ -148,7 +148,10 @@ def test_get_file_chunks_includes_symbols_for_python():
         names = {c["symbol_name"] for c in sym_chunks}
         assert names == {"preprocess", "Model", "train"}
 
-        assert len(line_chunks) > 0
+        # Generic line chunks must not cut across function/class bodies.
+        # This fixture contains no meaningful module-level context outside
+        # its symbols, so no fallback line chunks are expected.
+        assert line_chunks == []
     finally:
         os.unlink(tmp_path)
 
