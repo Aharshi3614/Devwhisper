@@ -328,6 +328,8 @@ def check_embedding_version() -> None:
             )
 
 
+from pipeline_hooks import hook_registry
+
 def retrieve(
     query: str,
     top_k: int = RETRIEVAL_TOP_K,
@@ -337,22 +339,9 @@ def retrieve(
     repositories: list[str] | str | None = None,
 ):
     """
-    Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF supporting single or multiple repositories.
-
-    Args:
-        query: User's natural language or code query.
-        top_k: Number of top results to return after fusion.
-        include_sources: If True, also return the list of source files/repositories.
-        metadata_filter: Optional key-value filter for metadata-constrained search.
-        repo_id: Optional repository id. When set, searches that repository's
-            dedicated Qdrant collection and BM25 index (per-repository isolation).
-        repositories: Optional single repository name or list of repository
-            names to filter by the ``repository`` payload tag (shared-index mode).
-
-    Returns:
-        If include_sources is False: formatted context string.
-        If include_sources is True: tuple of (formatted_context, unique_sources).
+    Hybrid retrieval with pipeline hooks execution.
     """
+    hook_registry.execute_pre_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id})
     if repo_id is not None:
         target_collection = repo_registry.collection_name(repo_id)
     else:
@@ -486,7 +475,6 @@ Location: {location}
         )
 
     formatted_context = "\n\n".join(structured_context)
-    if include_sources:
-        unique_sources = list(dict.fromkeys(sources))
-        return formatted_context, unique_sources
-    return formatted_context
+    result = (formatted_context, list(dict.fromkeys(sources))) if include_sources else formatted_context
+    hook_registry.execute_post_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id}, result)
+    return result
