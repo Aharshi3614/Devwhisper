@@ -469,52 +469,6 @@ def compute_chunk_statistics(chunks: list[dict]) -> dict:
     }
 
 
-def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = False) -> dict | None:  # noqa: C901
-    """
-    Main indexing pipeline: scan, chunk, embed, and store codebase into Qdrant + BM25.
-
-    Supports incremental mode via `--incremental` CLI flag, and dry run mode via
-    `--dry-run` CLI flag or `dry_run=True` parameter.
-
-    In dry run mode:
-      - Validates repository and scans indexable files.
-      - Calculates chunk & symbol statistics without creating embeddings or uploading vectors.
-      - Returns and logs detailed dry-run summary without modifying vector store or disk caches.
-    """
-    if "--dry-run" in sys.argv:
-        dry_run = True
-
-    # ── Resolve per-repository artifact names ──────────────────────────
-    if repo_id is not None:
-        target_collection = repositories.collection_name(repo_id)
-        target_bm25 = repositories.bm25_path(repo_id)
-        target_cache = repositories.cache_path(repo_id)
-    else:
-        target_collection = QDRANT_COLLECTION_NAME
-        target_bm25 = BM25_INDEX_PATH
-        target_cache = ".index_cache.json"
-
-    repo_name = os.path.basename(os.path.normpath(directory))
-
-    progress_state.update({
-        "running": True,
-        "current": 0,
-        "total": 0,
-        "percent": 0,
-        "current_file": "",
-        "status": "running",
-        "message": "Starting (Dry Run)..." if dry_run else "Starting...",
-    })
-
-    # ── Issue #224: Track indexing duration for the scan summary API ──
-    # Captured at the start of the run and stamped into the persisted
-    # _metadata block so /index/summary can report it later, even after
-    # the in-memory progress_state has been reset by a subsequent job.
-    indexing_started_at = time.monotonic()
-    indexing_started_at_wall = datetime.now(timezone.utc)
-
-  
-
 def discover_files(
     directory: str,
     gitignore_rules: list[tuple[str, PathSpec]] | None = None,
@@ -597,6 +551,50 @@ def upload_vectors(
         )
         total_uploaded += len(batch)
     return total_uploaded
+
+
+def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = False) -> dict | None:  # noqa: C901
+    """
+    Main indexing pipeline: scan, chunk, embed, and store codebase into Qdrant + BM25.
+
+    Supports incremental mode via `--incremental` CLI flag, and dry run mode via
+    `--dry-run` CLI flag or `dry_run=True` parameter.
+
+    In dry run mode:
+      - Validates repository and scans indexable files.
+      - Calculates chunk & symbol statistics without creating embeddings or uploading vectors.
+      - Returns and logs detailed dry-run summary without modifying vector store or disk caches.
+    """
+    if "--dry-run" in sys.argv:
+        dry_run = True
+
+    # ── Resolve per-repository artifact names ──────────────────────────
+    if repo_id is not None:
+        target_collection = repositories.collection_name(repo_id)
+        target_bm25 = repositories.bm25_path(repo_id)
+        target_cache = repositories.cache_path(repo_id)
+    else:
+        target_collection = QDRANT_COLLECTION_NAME
+        target_bm25 = BM25_INDEX_PATH
+        target_cache = ".index_cache.json"
+
+    repo_name = os.path.basename(os.path.normpath(directory))
+
+    progress_state.update({
+        "running": True,
+        "current": 0,
+        "total": 0,
+        "percent": 0,
+        "current_file": "",
+        "status": "running",
+        "message": "Starting (Dry Run)..." if dry_run else "Starting...",
+    })
+
+    indexing_started_at = time.monotonic()
+    indexing_started_at_wall = datetime.now(timezone.utc)
+
+    # ── Collect .gitignore rules (root + nested) ────────────────────────
+    gitignore_rules = load_gitignore_rules(directory)
 
     try:
         # ── Load previous cache for incremental mode ──────────────────────
