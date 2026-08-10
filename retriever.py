@@ -355,19 +355,6 @@ def retrieve(
 
     if context is not None and context.request_id:
         logger.debug(f"Executing retrieval for request_id={context.request_id}")
-
-    Args:
-        query: User's natural language or code query.
-        top_k: Number of top results to return after fusion.
-        include_sources: If True, also return the list of source files/repositories.
-        metadata_filter: Optional key-value filter for metadata-constrained search.
-        repo_id: Optional repository id. When set, searches that repository's
-            dedicated Qdrant collection and BM25 index (per-repository isolation).
-        repositories: Optional single repository name or list of repository
-            names to filter by the ``repository`` payload tag (shared-index mode).
-
-    Returns:
-        If include_sources is False: formatted context string.
         If include_sources is True: tuple of (formatted_context, unique_sources).
     """
     if repo_id is not None:
