@@ -515,8 +515,88 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
 
   
 
-    # ── Collect .gitignore rules (root + nested) ────────────────────────
-    gitignore_rules = load_gitignore_rules(directory)
+def discover_files(
+    directory: str,
+    gitignore_rules: list[tuple[str, PathSpec]] | None = None,
+) -> tuple[list[str], list[dict]]:
+    """Stage 1: File Discovery.
+    Walks directory, applies ignore rules and limits, and returns eligible and skipped files.
+    """
+    return collect_indexable_files(directory, gitignore_rules=gitignore_rules)
+
+
+def generate_chunks(files: list[str]) -> tuple[list[dict], dict[str, dict], dict[str, list[str]]]:
+    """Stage 2: Chunk Generation.
+    Processes indexable files to generate chunk payloads, cache entries, and import maps.
+    """
+    all_chunks = []
+    file_cache_map = {}
+    python_import = {}
+
+    for path in files:
+        file = os.path.basename(path)
+        python_import.update(parse_import(path, file))
+
+        cache_entry = {
+            "mtime": os.path.getmtime(path),
+            "hash": get_file_hash(path),
+        }
+
+        chunks = get_file_chunks(path)
+        file_symbols = []
+        for chunk in chunks:
+            if chunk.get("is_symbol"):
+                file_symbols.append({
+                    "name": chunk["symbol_name"],
+                    "type": chunk["symbol_type"]
+                })
+        cache_entry["symbols"] = file_symbols
+        file_cache_map[path] = cache_entry
+        all_chunks.extend(chunks)
+
+    return all_chunks, file_cache_map, python_import
+
+
+def generate_embeddings(chunks: list[dict], repo_name: str) -> list[PointStruct]:
+    """Stage 3: Embedding Generation.
+    Computes vector embeddings for generated chunks and wraps them into Qdrant PointStructs.
+    """
+    points = []
+    for chunk in chunks:
+        chunk["repository"] = repo_name
+        vector = embedder.encode(chunk["text"]).tolist()
+        unique_str = f"{chunk['file']}_{chunk['start_line']}"
+        stable_id = str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
+        points.append(
+            PointStruct(
+                id=stable_id,
+                vector=vector,
+                payload=chunk,
+            )
+        )
+    return points
+
+
+def upload_vectors(
+    collection_name: str,
+    points: list[PointStruct],
+    batch_size: int = INDEX_FILE_BATCH_SIZE,
+) -> int:
+    """Stage 4: Vector Upload.
+    Uploads PointStruct batches into Qdrant vector database.
+    """
+    if not points:
+        return 0
+
+    total_uploaded = 0
+    for i in range(0, len(points), batch_size):
+        batch = points[i : i + batch_size]
+        client.upsert(
+            collection_name=collection_name,
+            points=batch,
+        )
+        total_uploaded += len(batch)
+    return total_uploaded
 
     try:
         # ── Load previous cache for incremental mode ──────────────────────
