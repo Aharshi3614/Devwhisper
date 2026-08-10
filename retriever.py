@@ -355,8 +355,6 @@ def retrieve(
 
     if context is not None and context.request_id:
         logger.debug(f"Executing retrieval for request_id={context.request_id}")
-        If include_sources is True: tuple of (formatted_context, unique_sources).
-    """
     if repo_id is not None:
         target_collection = repo_registry.collection_name(repo_id)
     else:

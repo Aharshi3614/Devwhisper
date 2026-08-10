@@ -102,15 +102,6 @@ def generate_response(
         user_query = req_context.user_query
     elif req_context is not None and not user_query:
         user_query = req_context.user_query
-
-    Args:
-        user_query: The user's natural language or code question.
-        context: Retrieved code chunks from the codebase (from retriever.py).
-        history: Optional conversation history string for multi-turn context.
-
-    Returns:
-        The LLM's response text, or an error message if the call fails.
-    """
     try:
         client = _get_client()
         model = _get_model()
