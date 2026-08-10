@@ -79,18 +79,11 @@ def _get_bm25(repo_id: str | None) -> dict | None:
 
     return _bm25_data[repo_id]
 
+from query_normalizer import normalize_query
+
 def preprocess_query(query: str) -> str:
-    """Normalize user search queries by stripping whitespace and redundant punctuation."""
-    if not query:
-        return ""
-
-    # 1. Normalize whitespace (collapse redundant tabs, newlines, and multi-spaces)
-    query = re.sub(r"\s+", " ", query).strip()
-
-    # 2. Strip leading/trailing enclosing quotes or surrounding redundant punctuation
-    query = re.sub(r'^[^\w\s()_.\-]+|[^\w\s()_.\-]+$', "", query).strip()
-
-    return query
+    """Normalize user search queries using the query normalization layer."""
+    return normalize_query(query)
 
 
 def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
