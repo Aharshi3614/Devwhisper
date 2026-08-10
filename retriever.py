@@ -328,16 +328,33 @@ def check_embedding_version() -> None:
             )
 
 
+from request_context import RequestContext
+
 def retrieve(
-    query: str,
+    query: str | RequestContext = "",
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
     metadata_filter: dict | None = None,
     repo_id: str | None = None,
     repositories: list[str] | str | None = None,
+    context: RequestContext | None = None,
 ):
     """
     Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF supporting single or multiple repositories.
+
+    Can take a RequestContext object as context parameter or as the first positional argument.
+    """
+    if isinstance(query, RequestContext):
+        context = query
+        query = context.user_query
+    elif context is not None:
+        if not query:
+            query = context.user_query
+        if repo_id is None:
+            repo_id = context.repo_id
+
+    if context is not None and context.request_id:
+        logger.debug(f"Executing retrieval for request_id={context.request_id}")
 
     Args:
         query: User's natural language or code query.
