@@ -409,6 +409,7 @@ def retrieve(
             "parent_class": payload.get("parent_class"),
             "docstring": payload.get("docstring"),
             "is_symbol": payload.get("is_symbol", False),
+            "score": getattr(point, "score", None)
         })
 
     # ── Sparse keyword search (BM25) ────────────────────────────────────
@@ -428,7 +429,11 @@ def retrieve(
     # ── Format context for LLM ──────────────────────────────────────────
     structured_context = []
     sources = []
+    confidences = {}
     for index, result in enumerate(fused):
+
+        confidence = result.get("score")
+
         file = result.get("file", "unknown")
         repo = result.get("repository", "")
         start_line = result.get("start_line", "?")
@@ -438,6 +443,7 @@ def retrieve(
         source_label = f"{repo}:{file}" if repo else file
         if source_label and source_label != "unknown":
             sources.append(source_label)
+            confidences[source_label] = round(confidence * 100) if confidence is not None else None
 
         symbol_name = result.get("symbol_name")
         symbol_type = result.get("symbol_type")
@@ -483,5 +489,5 @@ Location: {location}
     formatted_context = "\n\n".join(structured_context)
     if include_sources:
         unique_sources = list(dict.fromkeys(sources))
-        return formatted_context, unique_sources
+        return formatted_context, unique_sources, confidences
     return formatted_context

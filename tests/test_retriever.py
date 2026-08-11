@@ -122,7 +122,7 @@ def test_retrieve_with_sources_returns_tuple_and_deduplicates(monkeypatch):
         _point({"file": None, "text": "def empty(): pass"}),
     ]
     _setup_mocks(monkeypatch, points)
-    context, sources = retriever.retrieve("test query", include_sources=True)
+    context, sources, _ = retriever.retrieve("test query", include_sources=True)
 
     assert isinstance(context, str)
     assert "File: a.py" in context
