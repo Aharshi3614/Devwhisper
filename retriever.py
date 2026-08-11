@@ -79,18 +79,11 @@ def _get_bm25(repo_id: str | None) -> dict | None:
 
     return _bm25_data[repo_id]
 
+from query_normalizer import normalize_query
+
 def preprocess_query(query: str) -> str:
-    """Normalize user search queries by stripping whitespace and redundant punctuation."""
-    if not query:
-        return ""
-
-    # 1. Normalize whitespace (collapse redundant tabs, newlines, and multi-spaces)
-    query = re.sub(r"\s+", " ", query).strip()
-
-    # 2. Strip leading/trailing enclosing quotes or surrounding redundant punctuation
-    query = re.sub(r'^[^\w\s()_.\-]+|[^\w\s()_.\-]+$', "", query).strip()
-
-    return query
+    """Normalize user search queries using the query normalization layer."""
+    return normalize_query(query)
 
 
 def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
@@ -331,12 +324,13 @@ def check_embedding_version() -> None:
 from pipeline_hooks import hook_registry
 
 def retrieve(
-    query: str,
+    query: str | RequestContext = "",
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
     metadata_filter: dict | None = None,
     repo_id: str | None = None,
     repositories: list[str] | str | None = None,
+    context: RequestContext | None = None,
 ):
     """
     Hybrid retrieval with pipeline hooks execution.
@@ -403,6 +397,7 @@ def retrieve(
             "parent_class": payload.get("parent_class"),
             "docstring": payload.get("docstring"),
             "is_symbol": payload.get("is_symbol", False),
+            "score": getattr(point, "score", None)
         })
 
     # ── Sparse keyword search (BM25) ────────────────────────────────────
@@ -422,7 +417,11 @@ def retrieve(
     # ── Format context for LLM ──────────────────────────────────────────
     structured_context = []
     sources = []
+    confidences = {}
     for index, result in enumerate(fused):
+
+        confidence = result.get("score")
+
         file = result.get("file", "unknown")
         repo = result.get("repository", "")
         start_line = result.get("start_line", "?")
@@ -432,6 +431,7 @@ def retrieve(
         source_label = f"{repo}:{file}" if repo else file
         if source_label and source_label != "unknown":
             sources.append(source_label)
+            confidences[source_label] = round(confidence * 100) if confidence is not None else None
 
         symbol_name = result.get("symbol_name")
         symbol_type = result.get("symbol_type")

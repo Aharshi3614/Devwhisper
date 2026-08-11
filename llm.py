@@ -85,21 +85,23 @@ def _get_model() -> str:
     return DEFAULT_OPENAI_COMPATIBLE_MODEL
 
 
-def generate_response(user_query: str, context: str, history: str = "") -> str:
+from request_context import RequestContext
+
+def generate_response(
+    user_query: str | RequestContext = "",
+    context: str = "",
+    history: str = "",
+    req_context: RequestContext | None = None,
+) -> str:
     """
     Generate a complete (non-streaming) response for a user query.
-
-    Sends the query + retrieved code context + conversation history to the
-    LLM and returns the full answer string.
-
-    Args:
-        user_query: The user's natural language or code question.
-        context: Retrieved code chunks from the codebase (from retriever.py).
-        history: Optional conversation history string for multi-turn context.
-
-    Returns:
-        The LLM's response text, or an error message if the call fails.
+    Supports RequestContext object passed via req_context or as first parameter.
     """
+    if isinstance(user_query, RequestContext):
+        req_context = user_query
+        user_query = req_context.user_query
+    elif req_context is not None and not user_query:
+        user_query = req_context.user_query
     try:
         client = _get_client()
         model = _get_model()

@@ -560,6 +560,8 @@ def validate_config() -> None:
 validate_config()
 
 
+PROMPT_PREVIEW_MODE: bool = os.getenv("PROMPT_PREVIEW_MODE", "false").lower() in ("true", "1", "yes")
+
 __all__ = [
     "ConfigError",
     "OUTPUT_DIRECTORY",
@@ -588,5 +590,6 @@ __all__ = [
     "LLM_API_KEY",
     "LLM_BASE_URL",
     "LLM_MODEL",
+    "PROMPT_PREVIEW_MODE",
     "validate_config",
 ]
