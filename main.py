@@ -485,6 +485,34 @@ def health():
     return {"status": "ok", "message": "DevWhisper is running"}
 
 
+@app.post("/prompt/preview")
+async def preview_prompt_endpoint(request: Request):
+    """
+    Generate prompt preview displaying retrieved context and constructed prompt (Issue #216).
+    Disabled by default unless enabled or explicit preview flag is set.
+    """
+    body = await request.json()
+    preview_enabled = body.get("preview_mode")
+    if preview_enabled is None:
+        from config import PROMPT_PREVIEW_MODE
+        preview_enabled = PROMPT_PREVIEW_MODE
+
+    if not preview_enabled:
+        raise HTTPException(status_code=403, detail="Prompt preview mode is disabled.")
+
+    user_query = body.get("query", "")
+    repo_id = body.get("repo_id")
+    context = body.get("context")
+    history = body.get("history", "")
+
+    if not context and user_query:
+        context = retrieve(query=user_query, repo_id=repo_id)
+
+    from prompt_builder import generate_prompt_preview
+    preview = generate_prompt_preview(user_query=user_query, context=context or "", history=history)
+    return JSONResponse(status_code=200, content=preview)
+
+
 @app.get("/statistics")
 def get_statistics():
     """

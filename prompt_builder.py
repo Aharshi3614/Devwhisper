@@ -101,3 +101,18 @@ def build_messages(user_query: str, context: str, history: str = "") -> List[Dic
             "content": user_content,
         },
     ]
+
+
+def generate_prompt_preview(user_query: str, context: str, history: str = "") -> Dict[str, Any]:
+    """
+    Generate prompt preview displaying retrieved context, system prompt, and final assembled messages.
+    """
+    prepared_ctx = prepare_context(context)
+    messages = build_messages(user_query, context, history)
+    return {
+        "user_query": user_query,
+        "retrieved_context": prepared_ctx,
+        "conversation_history": history,
+        "system_prompt": SYSTEM_PROMPT.strip(),
+        "final_prompt_messages": messages,
+    }
