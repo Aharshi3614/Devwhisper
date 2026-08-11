@@ -432,7 +432,7 @@ async def vapi_webhook(request: Request):
         except PipelineStageError as e:
             logger.error("Pipeline stage violation: %s", e)
 
-        context, sources = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
+        context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
         history = get_memory(session_id)
 
         try:
@@ -452,7 +452,7 @@ async def vapi_webhook(request: Request):
                 logger.error("Pipeline stage violation: %s", e)
 
             if sources:
-                sources_str = "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
+                sources_str = _sources_display(sources, confidences)
                 yield sources_str
                 full_response.append(sources_str)
 
@@ -609,7 +609,7 @@ async def stream_query(request: Request):
             return StreamingResponse(cached_generator(), media_type="text/plain")
 
         # Cache miss: run retrieval
-        context, sources = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
+        context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
         history = get_memory(session_id)
 
         def event_generator():
@@ -619,7 +619,7 @@ async def stream_query(request: Request):
                 yield token
 
             if sources:
-                sources_str = "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
+                sources_str = _sources_display(sources, confidences)
                 yield sources_str
                 full_response.append(sources_str)
 
@@ -1181,4 +1181,18 @@ def switch_repository_endpoint(payload: dict):
     if not _is_indexed(repo_id):
         _queue_index(repo_id)
     return {"id": repo_id, "indexed": _is_indexed(repo_id)}
+
+def _sources_display(sources: list[str], confidences: dict[str, int]):
+    """Build the 'Sources used' footer with per-source confidence level."""
+    parts = []
+    for s in sources:
+        conf = confidences.get(s)
+        if conf is None:
+            parts.append(f"`{s}`")
+        elif conf < 50:
+            parts.append(f"`{s}` ({conf}% ⚠️)")
+        else:
+            parts.append(f"`{s}` ({conf}%)")
+    return "\n\n**Sources used:** " + ", ".join(parts)
+
 
