@@ -328,31 +328,33 @@ def check_embedding_version() -> None:
             )
 
 
+from request_context import RequestContext
+
 def retrieve(
-    query: str,
+    query: str | RequestContext = "",
     top_k: int = RETRIEVAL_TOP_K,
     include_sources: bool = False,
     metadata_filter: dict | None = None,
     repo_id: str | None = None,
     repositories: list[str] | str | None = None,
+    context: RequestContext | None = None,
 ):
     """
     Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF supporting single or multiple repositories.
 
-    Args:
-        query: User's natural language or code query.
-        top_k: Number of top results to return after fusion.
-        include_sources: If True, also return the list of source files/repositories.
-        metadata_filter: Optional key-value filter for metadata-constrained search.
-        repo_id: Optional repository id. When set, searches that repository's
-            dedicated Qdrant collection and BM25 index (per-repository isolation).
-        repositories: Optional single repository name or list of repository
-            names to filter by the ``repository`` payload tag (shared-index mode).
-
-    Returns:
-        If include_sources is False: formatted context string.
-        If include_sources is True: tuple of (formatted_context, unique_sources).
+    Can take a RequestContext object as context parameter or as the first positional argument.
     """
+    if isinstance(query, RequestContext):
+        context = query
+        query = context.user_query
+    elif context is not None:
+        if not query:
+            query = context.user_query
+        if repo_id is None:
+            repo_id = context.repo_id
+
+    if context is not None and context.request_id:
+        logger.debug(f"Executing retrieval for request_id={context.request_id}")
     if repo_id is not None:
         target_collection = repo_registry.collection_name(repo_id)
     else:
