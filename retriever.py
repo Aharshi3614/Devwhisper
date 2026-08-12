@@ -48,6 +48,7 @@ from config import (
     RRF_K,
 )
 from logger import logger
+from request_context import RequestContext
 
 # ---------------------------------------------------------------------------
 # Qdrant client and embedder (module-level singletons)
