@@ -324,6 +324,34 @@ def check_embedding_version() -> None:
 
 from pipeline_hooks import hook_registry
 
+
+def _resolve_request_context(
+    query: str | RequestContext,
+    repo_id: str | None,
+    context: RequestContext | None,
+) -> tuple[str, str | None, RequestContext | None]:
+    """Unwrap a RequestContext passed positionally or via ``context=``.
+
+    Mirrors how ``llm.generate_response()`` handles the same two calling
+    styles. Explicit arguments always win over values carried on the
+    context, so an existing caller that passes both keeps its behaviour.
+
+    Returns:
+        (query_text, repo_id, request_context)
+    """
+    if isinstance(query, RequestContext):
+        context = query
+        query = ""
+
+    if context is not None:
+        if not query:
+            query = context.user_query or ""
+        if repo_id is None:
+            repo_id = context.repo_id
+
+    return query, repo_id, context
+
+
 def retrieve(
     query: str | RequestContext = "",
     top_k: int = RETRIEVAL_TOP_K,
@@ -335,7 +363,26 @@ def retrieve(
 ):
     """
     Hybrid retrieval with pipeline hooks execution.
+
+    Args:
+        query: The search query, or a ``RequestContext`` carrying one.
+        top_k: Number of fused results to return.
+        include_sources: Return the sources and confidence tables alongside
+            the formatted context.
+        metadata_filter: Optional payload key/value equality filters.
+        repo_id: Repository whose index to search. Falls back to the id on
+            *context* when not given explicitly.
+        repositories: Repository name(s) to restrict shared-collection results to.
+        context: Optional ``RequestContext`` (alternative to passing it as *query*).
+
+    Returns:
+        ``(formatted_context, sources, confidences)`` when *include_sources*
+        is true, otherwise the formatted context string. The three-value
+        shape is returned on every path, including the empty-query
+        early return — ``main.py`` unpacks three values unconditionally.
     """
+    query, repo_id, context = _resolve_request_context(query, repo_id, context)
+
     hook_registry.execute_pre_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id})
     if repo_id is not None:
         target_collection = repo_registry.collection_name(repo_id)
@@ -343,7 +390,7 @@ def retrieve(
         target_collection = QDRANT_COLLECTION_NAME
     query = preprocess_query(query)
     if not query:
-        return ("", []) if include_sources else ""
+        return ("", [], {}) if include_sources else ""
 
     check_embedding_version()
 
@@ -432,7 +479,14 @@ def retrieve(
         source_label = f"{repo}:{file}" if repo else file
         if source_label and source_label != "unknown":
             sources.append(source_label)
-            confidences[source_label] = round(confidence * 100) if confidence is not None else None
+            # Results are ordered best-first and `sources` is de-duplicated
+            # keeping the first occurrence, so the confidence table has to
+            # keep the first (highest ranked) score for a label too — not
+            # let a later, weaker chunk from the same file overwrite it.
+            if source_label not in confidences:
+                confidences[source_label] = (
+                    round(confidence * 100) if confidence is not None else None
+                )
 
         symbol_name = result.get("symbol_name")
         symbol_type = result.get("symbol_type")
@@ -476,6 +530,16 @@ Location: {location}
         )
 
     formatted_context = "\n\n".join(structured_context)
-    result = (formatted_context, list(dict.fromkeys(sources))) if include_sources else formatted_context
+    unique_sources = list(dict.fromkeys(sources))
+    if include_sources:
+        # Keep the confidence table aligned with the sources actually
+        # returned, so callers can look up every source without a KeyError.
+        result = (
+            formatted_context,
+            unique_sources,
+            {label: confidences.get(label) for label in unique_sources},
+        )
+    else:
+        result = formatted_context
     hook_registry.execute_post_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id}, result)
     return result
