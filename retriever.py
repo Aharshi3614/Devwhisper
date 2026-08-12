@@ -321,7 +321,7 @@ def check_embedding_version() -> None:
             )
 
 
-from request_context import RequestContext
+from pipeline_hooks import hook_registry
 
 def retrieve(
     query: str | RequestContext = "",
@@ -333,21 +333,9 @@ def retrieve(
     context: RequestContext | None = None,
 ):
     """
-    Hybrid retrieval: vector + BM25 + exact symbol matching fused via RRF supporting single or multiple repositories.
-
-    Can take a RequestContext object as context parameter or as the first positional argument.
+    Hybrid retrieval with pipeline hooks execution.
     """
-    if isinstance(query, RequestContext):
-        context = query
-        query = context.user_query
-    elif context is not None:
-        if not query:
-            query = context.user_query
-        if repo_id is None:
-            repo_id = context.repo_id
-
-    if context is not None and context.request_id:
-        logger.debug(f"Executing retrieval for request_id={context.request_id}")
+    hook_registry.execute_pre_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id})
     if repo_id is not None:
         target_collection = repo_registry.collection_name(repo_id)
     else:
@@ -487,7 +475,6 @@ Location: {location}
         )
 
     formatted_context = "\n\n".join(structured_context)
-    if include_sources:
-        unique_sources = list(dict.fromkeys(sources))
-        return formatted_context, unique_sources, confidences
-    return formatted_context
+    result = (formatted_context, list(dict.fromkeys(sources))) if include_sources else formatted_context
+    hook_registry.execute_post_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id}, result)
+    return result
