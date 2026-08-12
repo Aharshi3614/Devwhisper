@@ -322,6 +322,128 @@ async def root():
     return {"status": "ok"}
 
 
+def _extract_tool_queries(message: dict) -> list[str]:
+    """
+    Pull the ``query_codebase`` queries out of a Vapi function/tool payload.
+
+    Handles both shapes Vapi sends:
+      - ``function-call``: a single ``functionCall`` object.
+      - ``tool-calls``:    a ``toolCalls`` list, which may hold more than one call.
+
+    Arguments arrive either as a dict or as a JSON string, so both are
+    accepted. Tool calls for anything other than ``query_codebase`` are
+    ignored rather than treated as an error — Vapi assistants can be
+    configured with tools this server does not implement.
+
+    Args:
+        message: The Vapi ``message`` object from the webhook body.
+
+    Returns:
+        List of query strings, in payload order.
+
+    Raises:
+        ValueError: If a call's arguments are not valid JSON, or a
+            ``query_codebase`` call carries an empty query.
+    """
+    if message.get("type") == "function-call":
+        tools = [{"id": "single", "function": message.get("functionCall", {})}]
+    else:
+        tools = message.get("toolCalls", []) or []
+
+    queries = []
+    for tool in tools:
+        fn = tool.get("function", {}) or {}
+        if fn.get("name", "") != "query_codebase":
+            continue
+
+        params = fn.get("arguments") or fn.get("parameters") or {}
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    "Invalid JSON in command parameters. Try rephrasing."
+                ) from e
+
+        query = (params or {}).get("query", "")
+        if not query or not query.strip():
+            raise ValueError("Query parameter is required and cannot be empty.")
+
+        queries.append(query)
+
+    return queries
+
+
+def _answer_query(query: str, session_id: str):
+    """
+    Run one query through the full pipeline and stream the answer.
+
+    Pipeline: cache lookup → (miss) retrieve → LLM → sources footer →
+    cache store + session memory.
+
+    Args:
+        query: The user's question.
+        session_id: Conversation session to read history from and update.
+
+    Returns:
+        A generator yielding response text chunks.
+    """
+    # Issue #227: validate pipeline stage order
+    tracker = PipelineTracker()
+
+    def _stage(name: str) -> None:
+        try:
+            tracker.enter(name)
+        except PipelineStageError as e:
+            logger.error("Pipeline stage violation: %s", e)
+
+    _stage("cache_lookup")
+    cached = cache_get(query)
+    if cached is not None:
+        update_memory(session_id, query, cached)
+        _stage("cache_insertion")
+
+        def cached_generator():
+            yield cached
+
+        return cached_generator()
+
+    # Cache miss: run retrieval
+    _stage("retrieval")
+    context, sources, confidences = retrieve(
+        query,
+        include_sources=True,
+        repo_id=repositories.get_current_repo_id(),
+        repositories=repositories.get_current_repo_name(),
+    )
+    history = get_memory(session_id)
+
+    _stage("generation")
+
+    def event_generator():
+        full_response = []
+        for token in generate_response_stream(query, context, history):
+            full_response.append(token)
+            yield token
+
+        _stage("post_processing")
+
+        if sources:
+            sources_str = _sources_display(sources, confidences)
+            yield sources_str
+            full_response.append(sources_str)
+
+        # Update cache and session history on complete stream
+        _stage("cache_insertion")
+
+        answer = "".join(full_response)
+        if answer and answer.strip():
+            cache_put(query, answer)
+            update_memory(session_id, query, answer)
+
+    return event_generator()
+
+
 @app.post("/webhook")
 async def vapi_webhook(request: Request):
     """
@@ -335,11 +457,17 @@ async def vapi_webhook(request: Request):
     For function/tool calls, the pipeline is:
       cache lookup → (miss) retrieve(context) → LLM → cache store → response
 
+    Vapi also emits lifecycle events this server does not act on
+    (``status-update``, ``end-of-call-report``, ``conversation-update``, …).
+    Those are acknowledged with 200 so routine callbacks are not logged as
+    server errors.
+
     Args:
         request: FastAPI Request object containing the Vapi JSON payload.
 
     Returns:
-        JSONResponse with assistant config, tool results, or error.
+        StreamingResponse with the answer(s), or JSONResponse with the
+        assistant config, an acknowledgement, or an error.
     """
     try:
         body = await request.json()
@@ -375,99 +503,41 @@ async def vapi_webhook(request: Request):
 
         # ── Function / tool call handling ─────────────────────────────────
         if msg_type in ["function-call", "tool-calls"]:
-            tools = []
-
-            if msg_type == "function-call":
-                tools = [{
-                    "id": "single",
-                    "function": message.get("functionCall", {})
-                }]
-            else:
-                tools = message.get("toolCalls", [])
-
-            results = []
-
-            for tool in tools:
-                fn = tool.get("function", {})
-                fn_name = fn.get("name", "")
-
-                # Handle both dict and stringified JSON parameters.
-                params = fn.get("arguments") or fn.get("parameters") or {}
-                if isinstance(params, str):
-                    try:
-                        params = json.loads(params)
-                    except json.JSONDecodeError as e:
-                        logger.error("Failed to parse command parameters: %s", e)
-                        return error_response(400, "Invalid JSON in command parameters. Try rephrasing.")
-
-                if fn_name == "query_codebase":
-                    query = params.get("query", "")
-                    if not query:
-                        return error_response(400, "Query parameter is required and cannot be empty.")
-
-        # Cache lookup
-        # Issue #227: validate pipeline stage order
-        tracker = PipelineTracker()
-        try:
-            tracker.enter("cache_lookup")
-        except PipelineStageError as e:
-            logger.error("Pipeline stage violation: %s", e)
-
-        cached = cache_get(query)
-        if cached is not None:
-            update_memory(session_id, query, cached)
             try:
-                tracker.enter("cache_insertion")
-            except PipelineStageError as e:
-                logger.error("Pipeline stage violation: %s", e)
+                queries = _extract_tool_queries(message)
+            except ValueError as e:
+                logger.error("Rejected webhook tool call: %s", e)
+                return error_response(400, str(e))
 
-            async def cached_generator():
-                yield cached
+            if not queries:
+                # A function/tool payload we have no handler for. Nothing to
+                # answer, but nothing went wrong either.
+                return JSONResponse({"status": "ok", "results": []})
 
-            return StreamingResponse(cached_generator(), media_type="text/plain")
+            if len(queries) == 1:
+                return StreamingResponse(
+                    _answer_query(queries[0], session_id),
+                    media_type="text/plain",
+                )
 
-        # Cache miss: run retrieval
-        try:
-            tracker.enter("retrieval")
-        except PipelineStageError as e:
-            logger.error("Pipeline stage violation: %s", e)
+            # More than one query_codebase call in a single payload: answer
+            # every one of them in order instead of silently dropping all but
+            # the last. Each answer is labelled so the caller can tell them
+            # apart in the stream.
+            def multi_generator():
+                for position, query in enumerate(queries, start=1):
+                    if position > 1:
+                        yield "\n\n"
+                    yield f"**[{position}/{len(queries)}] {query}**\n\n"
+                    yield from _answer_query(query, session_id)
 
-        context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
-        history = get_memory(session_id)
+            return StreamingResponse(multi_generator(), media_type="text/plain")
 
-        try:
-            tracker.enter("generation")
-        except PipelineStageError as e:
-            logger.error("Pipeline stage violation: %s", e)
-
-        def event_generator():
-            full_response = []
-            for token in generate_response_stream(query, context, history):
-                full_response.append(token)
-                yield token
-
-            try:
-                tracker.enter("post_processing")
-            except PipelineStageError as e:
-                logger.error("Pipeline stage violation: %s", e)
-
-            if sources:
-                sources_str = _sources_display(sources, confidences)
-                yield sources_str
-                full_response.append(sources_str)
-
-            # Update cache and session history on complete stream
-            try:
-                tracker.enter("cache_insertion")
-            except PipelineStageError as e:
-                logger.error("Pipeline stage violation: %s", e)
-
-            answer = "".join(full_response)
-            if answer and answer.strip():
-                cache_put(query, answer)
-                update_memory(session_id, query, answer)
-
-        return StreamingResponse(event_generator(), media_type="text/plain")
+        # ── Lifecycle events we do not act on ─────────────────────────────
+        # status-update, end-of-call-report, conversation-update, speech-update…
+        # Acknowledging these keeps routine Vapi callbacks out of the error log.
+        logger.info("Ignoring unhandled webhook message type: %r", msg_type)
+        return JSONResponse({"status": "ignored", "type": msg_type})
 
     except Exception:
         logger.error("SERVER ERROR", exc_info=True)
