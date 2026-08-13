@@ -48,6 +48,7 @@ from config import (
     RRF_K,
 )
 from logger import logger
+from request_context import RequestContext
 
 # ---------------------------------------------------------------------------
 # Qdrant client and embedder (module-level singletons)
@@ -56,28 +57,122 @@ client = vector_store.client
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 
 # ---------------------------------------------------------------------------
-# BM25 index (lazy-loaded per repository)
+# BM25 index (lazy-loaded per repository, reloaded when the file changes)
 # ---------------------------------------------------------------------------
-_bm25_data: dict[str, dict] = {}
+# Cached payload per repository: {repo_id: (stamp, data)} where `stamp` is the
+# (mtime_ns, size) of the pickle the payload was loaded from, or None when the
+# file was missing/unreadable.
+#
+# Re-indexing rewrites this pickle in the same process that holds the cached
+# copy, so keying purely on repo_id — as this did originally — pinned keyword
+# and symbol search to whatever snapshot happened to load first. Dense vector
+# search queries Qdrant live and does see the new code, so the two halves of
+# hybrid retrieval drifted apart after every re-index, and RRF still boosted
+# the stale chunks because they showed up in two of the three ranked lists.
+_bm25_data: dict[str | None, tuple[tuple[int, int] | None, dict | None]] = {}
+
+
+def _bm25_stamp(path: str) -> tuple[int, int] | None:
+    """
+    Return a cheap change-detection stamp for the BM25 pickle at *path*.
+
+    Uses ``(st_mtime_ns, st_size)`` — one stat() call, no reading and no
+    hashing, so this is affordable on every query. Size is included because
+    a rewrite within the same mtime tick is possible on coarse clocks.
+
+    Args:
+        path: Path to the BM25 pickle.
+
+    Returns:
+        The stamp tuple, or None if the file does not exist or cannot be stat'ed.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _bm25_index_path(repo_id: str | None) -> str:
+    """Return the BM25 pickle path for *repo_id* (or the shared default)."""
+    if repo_id is None:
+        return BM25_INDEX_PATH
+    return repo_registry.bm25_path(repo_id)
+
+
+def invalidate_bm25_cache(repo_id: str | None = None) -> None:
+    """
+    Drop the in-process BM25 cache so the next query reloads from disk.
+
+    ``_get_bm25()`` already notices a changed file on its own; this is for
+    callers that know the index just changed and would rather not wait for
+    the stat() to say so.
+
+    Args:
+        repo_id: Repository whose cached index to drop. ``None`` clears the
+            entry for the shared/default index only — pass no argument and
+            use :func:`clear_bm25_cache` to drop everything.
+    """
+    _bm25_data.pop(repo_id, None)
+
+
+def clear_bm25_cache() -> None:
+    """Drop every cached BM25 index (all repositories)."""
+    _bm25_data.clear()
+
 
 def _get_bm25(repo_id: str | None) -> dict | None:
-    if repo_id is None:
-        path = BM25_INDEX_PATH
-    else:
-        path = repo_registry.bm25_path(repo_id)
+    """
+    Return the BM25 payload for *repo_id*, reloading it if the file changed.
 
-    if repo_id not in _bm25_data:
-        try:
-            with open(path, "rb") as f:
-                _bm25_data[repo_id] = pickle.load(f)
-        except FileNotFoundError:
-            _bm25_data[repo_id] = None
-            logger.info(f"BM25 index not found - keyword search disabled.")
-        except Exception as e:
-            _bm25_data[repo_id] = None
-            logger.warning(f"Failed to load BM25 index: {e}")
+    The pickle is re-read only when its (mtime, size) stamp differs from the
+    one the cached payload was loaded with, so a steady-state query pays a
+    single stat() rather than a pickle.load().
 
-    return _bm25_data[repo_id]
+    A missing or unreadable index is cached as ``None`` along with its stamp,
+    which means a repository that had no BM25 index when it was first queried
+    starts working as soon as indexing creates one — previously that "missing"
+    verdict was permanent for the life of the process.
+
+    Args:
+        repo_id: Repository id, or None for the shared/default index.
+
+    Returns:
+        The BM25 payload dict (``{"bm25": ..., "chunks": [...]}``), or None
+        when no usable index exists.
+    """
+    path = _bm25_index_path(repo_id)
+    stamp = _bm25_stamp(path)
+
+    cached = _bm25_data.get(repo_id)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+
+    if stamp is None:
+        # File is absent. Record the miss against the absent-stamp so the
+        # next call re-checks once the file appears.
+        _bm25_data[repo_id] = (None, None)
+        logger.info("BM25 index not found at %s - keyword search disabled.", path)
+        return None
+
+    try:
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+    except FileNotFoundError:
+        # Raced with a delete between the stat() and the open().
+        _bm25_data[repo_id] = (None, None)
+        logger.info("BM25 index not found at %s - keyword search disabled.", path)
+        return None
+    except Exception as e:
+        _bm25_data[repo_id] = (stamp, None)
+        logger.warning("Failed to load BM25 index at %s: %s", path, e)
+        return None
+
+    if cached is not None:
+        logger.info("BM25 index at %s changed on disk - reloaded.", path)
+
+    _bm25_data[repo_id] = (stamp, data)
+    return data
 
 from query_normalizer import normalize_query
 
