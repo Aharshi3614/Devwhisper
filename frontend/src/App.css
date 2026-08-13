@@ -91,7 +91,7 @@
   width: 100%;
   background: transparent;
   border: none;
-  resize: vertical;
+  resize: none;
   min-height: 84px;
   max-height: 280px;
   padding: 16px 16px 12px;
@@ -195,6 +195,7 @@
     transform: scale(1);
     opacity: 1;
   }
+
   50% {
     transform: scale(1.2);
     opacity: 0.6;
@@ -210,8 +211,15 @@
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .response-container.success {
@@ -423,7 +431,7 @@
   .app {
     padding: 24px 16px;
   }
-  
+
   .logo-text {
     font-size: 2.75rem;
   }
@@ -436,7 +444,7 @@
     padding: 24px;
     gap: 20px;
   }
-  
+
   .landing-container {
     gap: 24px;
   }
@@ -456,11 +464,11 @@
     gap: 16px;
     border-radius: 16px;
   }
-  
+
   .query-toolbar {
     padding: 10px 12px;
   }
-  
+
   .submit-button {
     padding: 8px 16px;
     font-size: 0.9rem;
@@ -483,11 +491,9 @@
   border: 1px solid var(--border);
   border-radius: 999px;
 
-  background: linear-gradient(
-    135deg,
-    var(--accent-bg),
-    var(--bg)
-  );
+  background: linear-gradient(135deg,
+      var(--accent-bg),
+      var(--bg));
 
   color: var(--text-h);
   font-weight: 600;
@@ -527,7 +533,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24px; 
+  gap: 24px;
 }
 
 /* --- Streaming Cursor --- */
@@ -542,7 +548,9 @@
 }
 
 @keyframes cursor-blink {
-  to { visibility: hidden; }
+  to {
+    visibility: hidden;
+  }
 }
 
 .toolbar-right {
@@ -676,6 +684,7 @@
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
