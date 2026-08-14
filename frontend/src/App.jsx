@@ -76,6 +76,11 @@ function Home() {
     }, 1000)
   }, [])
 
+  const handleTextareaInput = (e) => {
+    e.target.style.height = 'auto'
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 280)}px`
+  }
+
   // Clear conversation handler
   const handleClearChat = async () => {
     if (loading) return
@@ -298,21 +303,21 @@ function Home() {
       }
     }
     catch (err) {
-        console.error('Error checking reindex recommendation:', err)
+      console.error('Error checking reindex recommendation:', err)
     }
   }, [])
 
   useEffect(() => {
-      checkReindex()
-      const timer = setInterval(checkReindex, 30000)
-      return () => clearInterval(timer)
-    }, [checkReindex])
+    checkReindex()
+    const timer = setInterval(checkReindex, 30000)
+    return () => clearInterval(timer)
+  }, [checkReindex])
 
   useEffect(() => {
-      // Refresh the banner right away when the active repository changes
-      window.addEventListener('repo-changed', checkReindex)
-      return () => window.removeEventListener('repo-changed', checkReindex)
-    }, [checkReindex])
+    // Refresh the banner right away when the active repository changes
+    window.addEventListener('repo-changed', checkReindex)
+    return () => window.removeEventListener('repo-changed', checkReindex)
+  }, [checkReindex])
 
   useEffect(() => {
     let active = true
@@ -511,8 +516,8 @@ function Home() {
       }
     }
   }
- 
-  return (    
+
+  return (
     <div className="landing-container">
       <header className="hero-header">
         <h1 className="logo-text">DevWhisper</h1>
@@ -531,6 +536,7 @@ function Home() {
             <textarea
               value={queryText}
               onChange={e => setQueryText(e.target.value)}
+              onInput={handleTextareaInput}
               placeholder={isListening ? "Listening... Speak now." : "Ask about your codebase... (e.g., In main.py, what functions are found?)"}
               disabled={loading}
               rows={3}
@@ -542,11 +548,11 @@ function Home() {
                 }
               }}
             />
-            
+
             <div className="query-toolbar">
               <div className="toolbar-left">
-                <MicButton 
-                  isListening={isListening} 
+                <MicButton
+                  isListening={isListening}
                   onClick={handleMicClick}
                   disabled={loading}
                   countdown={countdown}
@@ -554,13 +560,13 @@ function Home() {
                 <div className="voice-status-info">
                   <span className={`status-dot ${isListening ? 'listening' : 'ready'}`}></span>
                   <span className="status-message">
-                    {isListening 
-                      ? (speechSupported ? "Listening... Speak now" : "Listening (Mock)...") 
+                    {isListening
+                      ? (speechSupported ? "Listening... Speak now" : "Listening (Mock)...")
                       : "Voice assistant ready"}
                   </span>
                 </div>
               </div>
-              
+
               <div className="toolbar-right">
                 <button
                   type="button"
@@ -571,9 +577,9 @@ function Home() {
                 >
                   Clear Chat
                 </button>
-                <button 
-                  type="submit" 
-                  disabled={loading || !queryText.trim() || isListening} 
+                <button
+                  type="submit"
+                  disabled={loading || !queryText.trim() || isListening}
                   className="submit-button"
                 >
                   {loading ? 'Analyzing...' : 'Send Query'}
