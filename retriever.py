@@ -17,6 +17,7 @@ Key components:
   - _extract_symbols(): Heuristic symbol extraction from natural language queries.
   - _exact_symbol_search(): Direct symbol name matching in chunks (metadata-aware).
   - _rrf_fusion(): Reciprocal Rank Fusion to combine ranked lists.
+  - _fusion_key(): Content identity used to recognise the same chunk across lists.
   - check_embedding_version(): Warns if indexed embeddings differ from config.
   - get_repository_metadata(): Reads indexing metadata from .index_cache.json.
 
@@ -362,6 +363,62 @@ def _exact_symbol_search(
     return matches[:top_k]
 
 
+# Fields each retriever contributes on its own and the others leave unset.
+# When two retrievers turn out to have found the same chunk, the merged copy
+# should carry all of them — otherwise the confidence table in retrieve()
+# misses the dense score on a chunk that BM25 happened to rank first.
+_RETRIEVER_SCORE_FIELDS = ("score", "bm25_score", "exact_match_count")
+
+
+def _fusion_key(doc: dict) -> tuple:
+    """
+    Return a content identity for *doc*, used to group it across ranked lists.
+
+    The three retrievers number their results independently — Qdrant results
+    are ``v_<position in the response>``, BM25 results are the integer offset
+    into the pickled corpus, symbol results are ``s_<same offset>``. Those
+    namespaces never overlap, so grouping on ``_idx`` puts one physical chunk
+    into as many buckets as the retrievers that found it. Grouping on where
+    the chunk actually lives in the repository puts it into one.
+
+    Args:
+        doc: A chunk dict from any of the three retrievers.
+
+    Returns:
+        A hashable identity. Falls back to the retriever-local ``_idx`` for
+        chunks with no usable file path, so results that carry no location
+        (older payloads, hand-built test fixtures) still fuse by identity
+        rather than collapsing into each other.
+    """
+    file = doc.get("file")
+    if file and file != "unknown":
+        return (
+            "chunk",
+            doc.get("repository") or "",
+            file,
+            doc.get("start_line"),
+            doc.get("symbol_name") or "",
+        )
+    return ("idx", str(doc.get("_idx", id(doc))))
+
+
+def _merge_retriever_fields(target: dict, source: dict) -> None:
+    """
+    Copy the score fields *source* has and *target* lacks onto *target*.
+
+    Called when two retrievers return the same chunk. Existing values always
+    win, so the first list to report a chunk keeps its own numbers and only
+    genuinely missing fields are filled in.
+
+    Args:
+        target: The chunk copy kept in the fused output. Mutated in place.
+        source: A duplicate of the same chunk from another ranked list.
+    """
+    for field in _RETRIEVER_SCORE_FIELDS:
+        if target.get(field) is None and source.get(field) is not None:
+            target[field] = source[field]
+
+
 def _rrf_fusion(
     result_lists: list[list[dict]],
     k: int = RRF_K,
@@ -373,28 +430,51 @@ def _rrf_fusion(
     RRF score = Σ 1 / (k + rank + 1) for each document across all lists.
     Documents appearing in multiple lists get boosted.
 
+    Documents are grouped by :func:`_fusion_key` rather than by the ``_idx``
+    each retriever assigns, so a chunk that dense search, BM25 and symbol
+    matching all found is scored once with all three contributions instead of
+    three times with one contribution each. That is what makes the "appears in
+    multiple lists" boost real, and it stops the same code being handed to the
+    LLM two or three times over inside a single ``top_k`` budget.
+
+    A document is only credited once per list. Duplicates within one list —
+    two chunks of the same function, say — would otherwise let a single
+    retriever compound its own vote.
+
     Args:
         result_lists: List of ranked result lists (each a list of chunk dicts).
         k: RRF constant (default 60) — dampens the influence of low ranks.
         final_top_k: Number of top-fused results to return.
 
     Returns:
-        List of chunk dicts augmented with 'rrf_score', sorted by score descending.
+        List of chunk dicts augmented with 'rrf_score', sorted by score
+        descending. Ties are broken by first appearance, so the ordering is
+        stable across runs.
     """
-    scores: dict[str, float] = {}
-    doc_map: dict[str, dict] = {}
+    scores: dict[tuple, float] = {}
+    doc_map: dict[tuple, dict] = {}
+    order: dict[tuple, int] = {}
 
     for results in result_lists:
+        seen_in_list: set[tuple] = set()
         for rank, doc in enumerate(results):
-            idx = str(doc.get("_idx", id(doc)))
-            scores[idx] = scores.get(idx, 0) + 1.0 / (k + rank + 1)
-            if idx not in doc_map:
-                doc_map[idx] = doc.copy()
+            key = _fusion_key(doc)
+            if key in seen_in_list:
+                # Same chunk twice in one ranked list — one vote, not two.
+                continue
+            seen_in_list.add(key)
 
-    ranked = sorted(scores.items(), key=lambda x: -x[1])
+            scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
+            if key not in doc_map:
+                doc_map[key] = doc.copy()
+                order[key] = len(order)
+            else:
+                _merge_retriever_fields(doc_map[key], doc)
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], order[item[0]]))
     final = []
-    for idx, score in ranked[:final_top_k]:
-        doc = doc_map[idx]
+    for key, score in ranked[:final_top_k]:
+        doc = doc_map[key]
         doc["rrf_score"] = score
         final.append(doc)
     return final
