@@ -18,7 +18,8 @@ Key components:
   - _exact_symbol_search(): Direct symbol name matching in chunks (metadata-aware).
   - _rrf_fusion(): Reciprocal Rank Fusion to combine ranked lists.
   - check_embedding_version(): Warns if indexed embeddings differ from config.
-  - get_repository_metadata(): Reads indexing metadata from .index_cache.json.
+  - get_repository_metadata(): Reads indexing metadata for a repository's index cache.
+  - metadata_path_for(): Resolves a repository id to its index-cache path.
 
 Dependencies:
   - QdrantClient (vector DB)
@@ -72,16 +73,16 @@ embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
 _bm25_data: dict[str | None, tuple[tuple[int, int] | None, dict | None]] = {}
 
 
-def _bm25_stamp(path: str) -> tuple[int, int] | None:
+def _file_stamp(path: str) -> tuple[int, int] | None:
     """
-    Return a cheap change-detection stamp for the BM25 pickle at *path*.
+    Return a cheap change-detection stamp for the file at *path*.
 
     Uses ``(st_mtime_ns, st_size)`` — one stat() call, no reading and no
     hashing, so this is affordable on every query. Size is included because
     a rewrite within the same mtime tick is possible on coarse clocks.
 
     Args:
-        path: Path to the BM25 pickle.
+        path: Path to stat.
 
     Returns:
         The stamp tuple, or None if the file does not exist or cannot be stat'ed.
@@ -91,6 +92,11 @@ def _bm25_stamp(path: str) -> tuple[int, int] | None:
     except OSError:
         return None
     return (stat.st_mtime_ns, stat.st_size)
+
+
+def _bm25_stamp(path: str) -> tuple[int, int] | None:
+    """Change-detection stamp for the BM25 pickle at *path*."""
+    return _file_stamp(path)
 
 
 def _bm25_index_path(repo_id: str | None) -> str:
@@ -181,30 +187,105 @@ def preprocess_query(query: str) -> str:
     return normalize_query(query)
 
 
-def get_repository_metadata(metadata_path: str = ".index_cache.json") -> dict:
+# ---------------------------------------------------------------------------
+# Repository metadata (index cache) — per-repository path, stamped cache
+# ---------------------------------------------------------------------------
+# Where a pre-multi-repo install kept its index cache. Still the right answer
+# when no repository is registered.
+LEGACY_METADATA_PATH = ".index_cache.json"
+
+# Parsed `_metadata` blocks keyed by path: {path: (stamp, metadata)} where
+# `stamp` is the (mtime_ns, size) of the file it was parsed from, or None when
+# the file was missing/unreadable.
+_metadata_cache: dict[str, tuple[tuple[int, int] | None, dict]] = {}
+
+# (repo_id, indexed_version, configured_version) triples already warned about,
+# so a mismatch produces one line rather than one per query.
+_warned_embedding_versions: set[tuple[str | None, str, str]] = set()
+
+
+def metadata_path_for(repo_id: str | None) -> str:
+    """
+    Return the index-cache path for *repo_id*.
+
+    Mirrors what ``main.py`` does in ``/statistics`` and ``/index/summary``,
+    and what ``indexer.py`` actually writes: per-repository indexes live in
+    ``./output/index_cache_<repo_id>.json``, not in the working directory.
+
+    Args:
+        repo_id: Repository id, or None when no repository is registered.
+
+    Returns:
+        Path to the index cache JSON for that repository.
+    """
+    if repo_id is None:
+        return LEGACY_METADATA_PATH
+    return repo_registry.cache_path(repo_id)
+
+
+def reset_metadata_cache() -> None:
+    """Drop the parsed-metadata cache and the warned-version set.
+
+    ``get_repository_metadata()`` re-reads on its own when the file changes;
+    this is for tests and for callers that want a clean slate.
+    """
+    _metadata_cache.clear()
+    _warned_embedding_versions.clear()
+
+
+def get_repository_metadata(metadata_path: str = LEGACY_METADATA_PATH) -> dict:
     """
     Retrieve project-level repository metadata from the indexing cache.
 
+    The parsed ``_metadata`` block is cached against the file's
+    ``(mtime_ns, size)`` stamp — the same technique ``_get_bm25()`` uses for
+    the BM25 pickle — so a steady-state call pays one stat() instead of an
+    ``os.path.exists()`` plus a full ``json.load()``. That matters because
+    ``check_embedding_version()`` runs on every single query, and the
+    ``_metadata`` block grows with the repository (``skipped_files`` holds one
+    dict per skipped file).
+
+    A missing or corrupted file is cached as an empty dict against its stamp,
+    so the answer flips to real metadata as soon as indexing writes one.
+
     Args:
-        metadata_path: Path to the .index_cache.json file.
+        metadata_path: Path to the index cache JSON. Use
+            :func:`metadata_path_for` to derive it from a repository id.
 
     Returns:
-        Dict with metadata (repository_name, indexed_file_count, etc.) or empty dict.
+        Dict with metadata (repository_name, indexed_file_count, etc.) or
+        empty dict. A shallow copy, so callers cannot mutate the cache.
     """
-    if not os.path.exists(metadata_path):
+    stamp = _file_stamp(metadata_path)
+
+    cached = _metadata_cache.get(metadata_path)
+    if cached is not None and cached[0] == stamp:
+        return dict(cached[1])
+
+    if stamp is None:
+        _metadata_cache[metadata_path] = (None, {})
         return {}
+
     try:
         with open(metadata_path, "r", encoding="utf-8") as f:
             cache_data = json.load(f)
+    except FileNotFoundError:
+        # Raced with a delete between the stat() and the open().
+        _metadata_cache[metadata_path] = (None, {})
+        return {}
     except Exception:
         logger.warning("Corrupted repository metadata encountered.")
+        _metadata_cache[metadata_path] = (stamp, {})
         return {}
 
+    metadata = {}
     if isinstance(cache_data, dict):
-        metadata = cache_data.get("_metadata")
-        if isinstance(metadata, dict):
-            return metadata
-    return {}
+        block = cache_data.get("_metadata")
+        if isinstance(block, dict):
+            metadata = block
+
+    _metadata_cache[metadata_path] = (stamp, metadata)
+    return dict(metadata)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -400,20 +481,44 @@ def _rrf_fusion(
     return final
 
 
-def check_embedding_version() -> None:
+def check_embedding_version(repo_id: str | None = None) -> None:
     """
     Verify that the embedding version in the index matches the configured version.
 
     Logs a warning if a mismatch is detected, advising re-indexing.
+
+    This used to read ``.index_cache.json`` unconditionally, which is not
+    where a registered repository's metadata lives — ``indexer.py`` writes to
+    ``./output/index_cache_<repo_id>.json``. So the one diagnostic built to
+    catch "you changed the embedding model and did not re-index" never fired
+    for any repository, and if a legacy ``.index_cache.json`` happened to be
+    lying around it reported a clean bill of health for a repository it had
+    never looked at.
+
+    A mismatch is warned about once per (repository, version pair) rather
+    than on every query, since this runs on the hot path.
+
+    Args:
+        repo_id: Repository whose index metadata to check. None reads the
+            legacy working-directory cache.
     """
-    metadata = get_repository_metadata()
-    if metadata:
-        repo_version = metadata.get("embedding_version")
-        if repo_version and repo_version != EMBEDDING_VERSION:
-            logger.warning(
-                f"Embedding version mismatch detected (repository version: {repo_version}, "
-                f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
-            )
+    metadata = get_repository_metadata(metadata_path_for(repo_id))
+    if not metadata:
+        return
+
+    repo_version = metadata.get("embedding_version")
+    if not repo_version or repo_version == EMBEDDING_VERSION:
+        return
+
+    seen_key = (repo_id, repo_version, EMBEDDING_VERSION)
+    if seen_key in _warned_embedding_versions:
+        return
+    _warned_embedding_versions.add(seen_key)
+
+    logger.warning(
+        f"Embedding version mismatch detected (repository version: {repo_version}, "
+        f"configured version: {EMBEDDING_VERSION}). Re-indexing is recommended."
+    )
 
 
 from pipeline_hooks import hook_registry
@@ -486,7 +591,7 @@ def retrieve(
     if not query:
         return ("", [], {}) if include_sources else ""
 
-    check_embedding_version()
+    check_embedding_version(repo_id)
 
     # Normalize repositories parameter into a list if provided
     repo_list = None
