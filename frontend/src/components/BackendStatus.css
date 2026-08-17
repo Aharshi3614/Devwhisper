@@ -42,6 +42,17 @@
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.55);
 }
 
+.backend-status--degraded {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+  color: #d97706;
+}
+
+.backend-status--degraded .backend-status__dot {
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+}
+
 .backend-status--offline {
   border-color: rgba(239, 68, 68, 0.35);
   background: rgba(239, 68, 68, 0.08);
