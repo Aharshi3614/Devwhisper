@@ -174,7 +174,7 @@ def _get_bm25(repo_id: str | None) -> dict | None:
     _bm25_data[repo_id] = (stamp, data)
     return data
 
-from query_normalizer import normalize_query
+from query_normalizer import normalize_query, extract_query_filters
 
 def preprocess_query(query: str) -> str:
     """Normalize user search queries using the query normalization layer."""
@@ -477,11 +477,19 @@ def retrieve(
     """
     query, repo_id, context = _resolve_request_context(query, repo_id, context)
 
+    # Extract any inline metadata filters (e.g. file:main.py, type:function)
+    query, inline_filters = extract_query_filters(query)
+    if inline_filters:
+        if metadata_filter is None:
+            metadata_filter = {}
+        metadata_filter.update(inline_filters)
+
     hook_registry.execute_pre_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id})
     if repo_id is not None:
         target_collection = repo_registry.collection_name(repo_id)
     else:
         target_collection = QDRANT_COLLECTION_NAME
+
     query = preprocess_query(query)
     if not query:
         return ("", [], {}) if include_sources else ""

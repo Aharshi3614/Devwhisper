@@ -39,6 +39,33 @@ class QueryNormalizer:
                 normalized_tokens.append(token.lower())
         return " ".join(normalized_tokens)
 
+    def extract_filters(self, query: str) -> tuple[str, dict[str, str]]:
+        """
+        Extract structured filter directives such as 'file:app.py' or 'type:function'
+        from query strings, returning the clean query text and extracted filter dictionary.
+        """
+        if not query:
+            return "", {}
+
+        extracted_filters = {}
+        # Match pattern key:value
+        pattern = r'\b(file|type|symbol|repo):([a-zA-Z0-9_.\-]+)\b'
+        
+        matches = re.findall(pattern, query, re.IGNORECASE)
+        for key, val in matches:
+            canonical_key = key.lower()
+            if canonical_key == "file":
+                extracted_filters["file"] = val
+            elif canonical_key == "type":
+                extracted_filters["symbol_type"] = val
+            elif canonical_key == "symbol":
+                extracted_filters["symbol_name"] = val
+
+        # Strip directives out of search query
+        clean_query = re.sub(pattern, "", query).strip()
+        clean_query = self.normalize_whitespace(clean_query)
+        return clean_query, extracted_filters
+
     def normalize(self, query: str) -> str:
         """Apply full normalization pipeline: whitespace, punctuation, and capitalization."""
         if not query:
@@ -54,3 +81,7 @@ normalizer = QueryNormalizer()
 def normalize_query(query: str) -> str:
     """Convenience function for query normalization layer."""
     return normalizer.normalize(query)
+
+def extract_query_filters(query: str) -> tuple[str, dict[str, str]]:
+    """Convenience helper to extract search filters and normalize the query."""
+    return normalizer.extract_filters(query)
