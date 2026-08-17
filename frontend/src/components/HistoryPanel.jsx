@@ -571,6 +571,80 @@ function HistoryPanel() {
     )
   }
 
+  const handleExportSession = async () => {
+    if (!selectedSession) return
+    try {
+      const res = await fetch(`/history/export/${encodeURIComponent(selectedSession)}`)
+      if (!res.ok) throw new Error('Export failed')
+      const data = await res.json()
+      const blob = new Blob([JSON.stringify(data.session, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `devwhisper-session-${selectedSession}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      setShareFeedback('Session exported successfully')
+      setTimeout(() => setShareFeedback(''), 2000)
+    } catch (err) {
+      console.error('Export error:', err)
+      setShareFeedback('Failed to export session')
+      setTimeout(() => setShareFeedback(''), 2000)
+    }
+  }
+
+  const handleDeleteSession = async (sid, e) => {
+    if (e) e.stopPropagation()
+    if (!window.confirm(`Delete conversation session '${sid}'?`)) return
+    try {
+      const res = await fetch(`/history/${encodeURIComponent(sid)}`, { method: 'DELETE' })
+      if (res.ok) {
+        setSessions(prev => prev.filter(s => s.session_id !== sid))
+        if (selectedSession === sid) {
+          const remaining = sessions.filter(s => s.session_id !== sid)
+          if (remaining.length > 0) {
+            selectSession(remaining[0].session_id)
+          } else {
+            setSelectedSession(null)
+            setHistory([])
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to delete session:', err)
+    }
+  }
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const sessionData = JSON.parse(text)
+      const res = await fetch('/history/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: sessionData }),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Import failed')
+      }
+      const data = await res.json()
+      setShareFeedback('Session imported!')
+      setTimeout(() => setShareFeedback(''), 2000)
+      await fetchSessions()
+      selectSession(data.session_id)
+    } catch (err) {
+      console.error('Import error:', err)
+      alert(`Session import error: ${err.message}`)
+    } finally {
+      e.target.value = ''
+    }
+  }
+
   return (
     <div className="history-panel">
       {/* Sidebar overlay */}
@@ -600,6 +674,12 @@ function HistoryPanel() {
             </button>
           )}
         </div>
+        <div className="sidebar-import-wrapper" style={{ padding: '0.5rem 1rem' }}>
+          <label className="import-btn" style={{ display: 'inline-block', width: '100%', textAlign: 'center', cursor: 'pointer', padding: '0.4rem', border: '1px dashed var(--border-color, #444)', borderRadius: '4px', fontSize: '0.85rem' }}>
+            📥 Import Session JSON
+            <input type="file" accept=".json" onChange={handleImportFile} style={{ display: 'none' }} />
+          </label>
+        </div>
         <nav className="sidebar-list">
           {filteredSessions.length === 0 ? (
             <p className="sidebar-empty">
@@ -607,19 +687,33 @@ function HistoryPanel() {
             </p>
           ) : (
             filteredSessions.map(session => (
-              <button
+              <div
                 key={session.session_id}
-                className={`sidebar-item ${session.session_id === selectedSession ? 'sidebar-item--active' : ''}`}
-                onClick={() => selectSession(session.session_id)}
+                className={`sidebar-item-container ${session.session_id === selectedSession ? 'sidebar-item--active' : ''}`}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
               >
-                <span className="sidebar-item-title">
-                  {highlightText(sessionTitle(session), searchQuery)}
-                </span>
-                <span className="sidebar-item-meta">
-                  {formatRelativeTime(session.last_used)}
-                  {session.message_count > 0 && ` · ${session.message_count} msg${session.message_count > 1 ? 's' : ''}`}
-                </span>
-              </button>
+                <button
+                  className="sidebar-item"
+                  style={{ flex: 1, border: 'none', background: 'transparent', textAlign: 'left' }}
+                  onClick={() => selectSession(session.session_id)}
+                >
+                  <span className="sidebar-item-title">
+                    {highlightText(sessionTitle(session), searchQuery)}
+                  </span>
+                  <span className="sidebar-item-meta">
+                    {formatRelativeTime(session.last_used)}
+                    {session.message_count > 0 && ` · ${session.message_count} msg${session.message_count > 1 ? 's' : ''}`}
+                  </span>
+                </button>
+                <button
+                  className="session-delete-btn"
+                  title="Delete session"
+                  onClick={(e) => handleDeleteSession(session.session_id, e)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', opacity: 0.6, padding: '0.3rem' }}
+                >
+                  🗑️
+                </button>
+              </div>
             ))
           )}
         </nav>
@@ -633,6 +727,11 @@ function HistoryPanel() {
           <p className="subtitle">{currentSession ? sessionTitle(currentSession) : 'Conversation history'}</p>
         </div>
         <div className="header-actions">
+          {selectedSession && (
+            <button className="share-button" onClick={handleExportSession} title="Export conversation JSON">
+              💾 Export JSON
+            </button>
+          )}
           <button className="share-button" onClick={handleShareSessionLink}>
             🔗 Share link
           </button>
