@@ -106,16 +106,98 @@ class _SymbolExtractor(ast.NodeVisitor):
         self._current_class = old_class
 
 
+import re
+
+
+def _extract_js_ts_symbols(source: str) -> List[Symbol]:
+    """
+    Extract functions, async functions, arrow functions, and classes from JS/TS source.
+    """
+    symbols: List[Symbol] = []
+    lines = source.splitlines(keepends=True)
+    if not lines:
+        return []
+
+    # Patterns for JS/TS declarations
+    func_pattern = re.compile(r'^(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_$]+)\s*\(')
+    class_pattern = re.compile(r'^(?:export\s+)?class\s+([a-zA-Z0-9_$]+)')
+    arrow_pattern = re.compile(r'^(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>')
+
+    for idx, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        line_no = idx + 1
+
+        # Check function
+        m_func = func_pattern.match(line)
+        if m_func:
+            name = m_func.group(1)
+            # Find end by matching braces or approximation
+            end_line = min(len(lines), line_no + 20)
+            symbols.append(
+                Symbol(
+                    name=name,
+                    symbol_type="function",
+                    start_line=line_no,
+                    end_line=end_line,
+                    source="".join(lines[line_no - 1 : end_line]),
+                    docstring=None,
+                    parent_class=None,
+                )
+            )
+            continue
+
+        # Check class
+        m_class = class_pattern.match(line)
+        if m_class:
+            name = m_class.group(1)
+            end_line = min(len(lines), line_no + 30)
+            symbols.append(
+                Symbol(
+                    name=name,
+                    symbol_type="class",
+                    start_line=line_no,
+                    end_line=end_line,
+                    source="".join(lines[line_no - 1 : end_line]),
+                    docstring=None,
+                    parent_class=None,
+                )
+            )
+            continue
+
+        # Check const arrow function
+        m_arrow = arrow_pattern.match(line)
+        if m_arrow:
+            name = m_arrow.group(1)
+            end_line = min(len(lines), line_no + 20)
+            symbols.append(
+                Symbol(
+                    name=name,
+                    symbol_type="function",
+                    start_line=line_no,
+                    end_line=end_line,
+                    source="".join(lines[line_no - 1 : end_line]),
+                    docstring=None,
+                    parent_class=None,
+                )
+            )
+
+    return symbols
+
+
 def extract_symbols_from_source(source: str, filename: str = "<unknown>") -> List[Symbol]:
-    """Parse *source* and return all extractable symbols.
+    """Parse *source* and return all extractable symbols for Python or JS/TS files.
 
     Args:
-        source: Full Python source code.
-        filename: Used only for error reporting.
+        source: Full source code.
+        filename: Used for format detection and error reporting.
 
     Returns:
-        A list of :class:`Symbol` objects.  Empty on syntax errors.
+        A list of :class:`Symbol` objects. Empty on syntax errors.
     """
+    ext = Path(filename).suffix.lower()
+    if ext in (".js", ".jsx", ".ts", ".tsx", ".mjs"):
+        return _extract_js_ts_symbols(source)
+
     try:
         tree = ast.parse(source, filename=filename)
     except SyntaxError:
@@ -134,11 +216,10 @@ def extract_symbols_from_file(filepath: str) -> List[Symbol]:
     """Read *filepath* and return all extractable symbols.
 
     Args:
-        filepath: Path to a Python ``.py`` file.
+        filepath: Path to a supported source file (.py, .js, .jsx, .ts, .tsx).
 
     Returns:
-        A list of :class:`Symbol` objects.  Empty on unreadable files or
-        syntax errors.
+        A list of :class:`Symbol` objects. Empty on unreadable files or syntax errors.
     """
     path = Path(filepath)
     if not path.is_file():

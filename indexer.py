@@ -343,15 +343,15 @@ def _module_level_ranges(
 def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
     """Return semantically bounded indexing chunks for *filepath*.
 
-    Python files use AST symbols as the primary boundaries.  A function,
-    method, or class that fits within ``chunk_size`` stays as one chunk.
+    Python, JavaScript, and TypeScript files use symbols as primary boundaries.
+    A function, method, or class that fits within ``chunk_size`` stays as one chunk.
     Oversized symbols are split only inside that symbol, preserving its
-    metadata on every part.  Imports, constants, comments, and other
-    module-level source outside top-level symbols are chunked separately.
+    metadata on every part.
 
-    Non-Python files retain the existing overlapping line-based strategy.
+    Other file types retain the existing overlapping line-based strategy.
     """
-    if not filepath.lower().endswith(".py"):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext not in (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs"):
         return chunk_file(filepath, chunk_size=chunk_size)
 
     if chunk_size <= INDEX_CHUNK_OVERLAP:
@@ -365,7 +365,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
 
     symbols = extract_symbols_from_file(filepath)
     if not symbols:
-        # Syntax errors or symbol-free Python modules still need indexing.
+        # Files without extracted symbols fall back to regular line chunks.
         return chunk_file(filepath, chunk_size=chunk_size)
 
     chunks = []

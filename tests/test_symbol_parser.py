@@ -150,3 +150,27 @@ def test_returns_empty_for_unreadable_file(tmp_path):
         assert extract_symbols_from_file(str(bad)) == []
     finally:
         os.chmod(bad, 0o644)
+
+
+def test_extracts_js_ts_functions_and_classes():
+    js_code = """
+export function calculateSum(a, b) {
+    return a + b;
+}
+
+const fetchData = async () => {
+    return fetch('/api');
+};
+
+class AuthController {
+    constructor() {}
+}
+"""
+    symbols = extract_symbols_from_source(js_code, filename="controller.ts")
+    names = {s.name for s in symbols}
+    assert "calculateSum" in names
+    assert "fetchData" in names
+    assert "AuthController" in names
+    
+    cls_sym = next(s for s in symbols if s.name == "AuthController")
+    assert cls_sym.symbol_type == "class"

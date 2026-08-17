@@ -1149,9 +1149,9 @@ def get_index_suggestions():
         suggestions.append(f"What is the purpose of {f}?")
         suggestions.append(f"What contents or features are described in {f}?")
 
-    # Generate suggestions from python files and their symbols
-    py_files = [f for f in files_info if f["filename"].lower().endswith(".py")]
-    for f in py_files:
+    # Generate suggestions from python, javascript, and typescript files and their symbols
+    code_files = [f for f in files_info if any(f["filename"].lower().endswith(ext) for ext in (".py", ".js", ".jsx", ".ts", ".tsx"))]
+    for f in code_files:
         filename = f["filename"]
         symbols = f["symbols"]
 
