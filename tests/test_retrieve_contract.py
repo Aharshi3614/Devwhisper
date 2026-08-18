@@ -53,7 +53,9 @@ def qdrant(monkeypatch):
     monkeypatch.setattr(retriever, "embedder", embedder)
 
     monkeypatch.setattr(retriever, "_get_bm25", lambda repo_id: None)
-    monkeypatch.setattr(retriever, "check_embedding_version", lambda: None)
+    # retrieve() now passes repo_id through, so the check reads the active
+    # repository's index cache rather than the legacy path (issue #270).
+    monkeypatch.setattr(retriever, "check_embedding_version", lambda *a, **kw: None)
     return client
 
 
