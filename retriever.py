@@ -377,28 +377,76 @@ def _keyword_search(
     return results
 
 
+# Question words and other sentence scaffolding that must never be treated as
+# code. The tightened CamelCase pattern below already rejects these in their
+# usual "How ..." form; this list exists for the all-caps case — someone
+# typing "WHERE IS THE PARSER" would otherwise hand WHERE, IS and THE to
+# _exact_symbol_search() as acronyms.
+_SYMBOL_STOPWORDS = frozenset({
+    "how", "what", "where", "why", "when", "which", "who", "whose", "whom",
+    "is", "are", "was", "were", "be", "am",
+    "does", "do", "did", "done",
+    "can", "could", "should", "would", "will", "shall", "may", "might", "must",
+    "the", "this", "that", "these", "those",
+    "and", "or", "not", "but", "if", "then", "else",
+    "a", "an", "in", "on", "at", "to", "for", "of", "from", "with", "by",
+    "it", "its", "i", "we", "you", "they", "he", "she",
+    "show", "tell", "explain", "find", "give", "list", "get", "make", "use",
+})
+
+# Words followed by an opening parenthesis — "retrieve()", "get_scores(".
+_CALL_SYNTAX_RE = re.compile(r"\b(\w+)\s*\(")
+
+# CamelCase and acronyms. Two alternatives, both requiring more than a single
+# leading capital:
+#   [A-Z][a-z0-9]*[A-Z]\w*  — an interior capital: DataProcessor, RequestContext
+#   [A-Z]{2,}[0-9]*         — an acronym, optionally numbered: BM25, RRF, API
+# A single capitalised word ("Where", "Qdrant") is indistinguishable from the
+# first word of an English sentence, so it is deliberately not a candidate.
+_CAMEL_CASE_RE = re.compile(r"\b([A-Z][a-z0-9]*[A-Z]\w*|[A-Z]{2,}[0-9]*)\b")
+
+# snake_case identifiers — make_repo_id, cache_path, bm25_path.
+# The leading segment allows digits so numbered names are caught; the old
+# pattern was ``[a-z]+_[a-z_0-9]+``, which required the part before the first
+# underscore to be letters only and therefore missed "bm25_path" entirely.
+_SNAKE_CASE_RE = re.compile(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b")
+
+
 def _extract_symbols(query: str) -> list[str]:
     """
     Extract possible code symbol names from a natural language query.
 
     Uses three heuristics:
       1. Words followed by '(' — likely function calls.
-      2. CamelCase words — likely class names.
+      2. CamelCase words and acronyms — likely class names.
       3. snake_case words — likely function/variable names.
+
+    Heuristic 2 used to be ``\\b([A-Z][a-zA-Z0-9]+)\\b``, which asks for a
+    leading capital and nothing else. Since users type questions that start
+    with a capital letter, it fired on the first word of nearly every query —
+    "How", "What", "Where" all came back as class names. Those then went to
+    :func:`_exact_symbol_search`, whose fallback branch counts substrings
+    across the whole corpus, so the symbol list ended up ranked by how much
+    English prose a chunk contained. It now requires an interior capital or a
+    genuine acronym.
 
     Args:
         query: User's natural language query.
 
     Returns:
-        List of unique symbol name candidates.
+        Unique symbol name candidates, in the order they were found. The
+        ordering is deliberate — this used to return ``list(set(...))``,
+        whose order varies between runs and makes the caller hard to test.
     """
-    symbols = set()
-    for m in re.finditer(r"(\w+)\s*\(", query):
-        symbols.add(m.group(1))
-    for m in re.finditer(r"\b([A-Z][a-zA-Z0-9]+)\b", query):
-        symbols.add(m.group(1))
-    for m in re.finditer(r"\b([a-z]+_[a-z_0-9]+)\b", query):
-        symbols.add(m.group(1))
+    symbols: dict[str, None] = {}
+
+    for pattern in (_CALL_SYNTAX_RE, _CAMEL_CASE_RE, _SNAKE_CASE_RE):
+        for match in pattern.finditer(query):
+            candidate = match.group(1)
+            if candidate.lower() in _SYMBOL_STOPWORDS:
+                continue
+            symbols.setdefault(candidate, None)
+
     return list(symbols)
 
 
@@ -413,9 +461,24 @@ def _exact_symbol_search(
     Find chunks with exact symbol name matches, filtered by metadata and repositories, ranked by match count.
     """
 
-    bm25_data = _get_bm25(repo_id)
-    if not symbols or bm25_data is None:
+    # Checked before touching the index: with the symbol list now correctly
+    # empty for plain-English questions, this is the common case and there is
+    # no reason to load a corpus we are about to scan zero symbols against.
+    if not symbols:
         return []
+
+    bm25_data = _get_bm25(repo_id)
+    if bm25_data is None:
+        return []
+
+    # Compiled once for the whole corpus scan rather than per chunk.
+    # \b anchors each symbol to a word boundary, so searching for "get" stops
+    # scoring chunks that merely contain "budget", "target" or "forget".
+    # Python treats "_" as a word character, so snake_case names are matched
+    # whole: "\bcache_path\b" does not fire on "cache_path_for".
+    symbol_patterns = [
+        re.compile(r"\b" + re.escape(sym.lower()) + r"\b") for sym in symbols
+    ]
 
     matches = []
     for idx, chunk in enumerate(bm25_data["chunks"]):
@@ -433,7 +496,7 @@ def _exact_symbol_search(
             )
         else:
             text_lower = chunk["text"].lower()
-            count = sum(text_lower.count(sym.lower()) for sym in symbols)
+            count = sum(len(pattern.findall(text_lower)) for pattern in symbol_patterns)
 
         if count > 0:
             result = chunk.copy()
