@@ -12,6 +12,7 @@ LLM consumption, including file paths, symbol names, line numbers, and docstring
 
 Key components:
   - retrieve(): Main entry point — hybrid search + context formatting across single or multiple repositories.
+  - _fuse_ranked_lists(): Picks between fusion and a single-retriever result.
   - preprocess_query(): Normalize user queries before embedding/search.
   - _keyword_search(): BM25-based keyword retrieval.
   - _extract_symbols(): Heuristic symbol extraction from natural language queries.
@@ -526,6 +527,64 @@ def _resolve_request_context(
     return query, repo_id, context
 
 
+def _fuse_ranked_lists(
+    vector_chunks: list[dict],
+    keyword_chunks: list[dict],
+    symbol_chunks: list[dict],
+    top_k: int,
+) -> list[dict]:
+    """
+    Combine the three ranked lists into the final result set.
+
+    Rules:
+        - Two or three non-empty lists → Reciprocal Rank Fusion.
+        - Exactly one non-empty list → return that list, whichever it is.
+        - No non-empty lists → empty result.
+
+    The middle case is the one that used to be wrong. The old code fell back
+    to ``vector_chunks[:top_k]`` by name, which is only correct when the one
+    surviving list *is* the vector one. When dense search came back empty and
+    BM25 had matches, that fallback returned ``[]`` and the whole query was
+    answered from an empty context — see issue #267.
+
+    Dense search comes back empty more often than it looks: a query phrased
+    below ``QDRANT_SIMILARITY_THRESHOLD`` returns no points at all, the
+    collection for the active repository may not exist yet while its BM25
+    pickle does, and a ``metadata_filter`` can exclude everything Qdrant
+    found. In each of those cases the sparse retrievers still hold the answer.
+
+    Args:
+        vector_chunks: Dense search results, best-first.
+        keyword_chunks: BM25 results, best-first.
+        symbol_chunks: Exact symbol matches, best-first.
+        top_k: Maximum number of results to return.
+
+    Returns:
+        The fused (or single-list) results, truncated to *top_k*.
+    """
+    ranked_lists = [
+        results
+        for results in (vector_chunks, keyword_chunks, symbol_chunks)
+        if results
+    ]
+
+    if not ranked_lists:
+        return []
+
+    if len(ranked_lists) == 1:
+        if not vector_chunks:
+            # Worth a line in the log: retrieval succeeded on the sparse side
+            # only, which usually means the dense threshold is too aggressive
+            # for this phrasing or the collection is missing.
+            logger.debug(
+                "Dense search returned nothing; answering from %d sparse result(s).",
+                len(ranked_lists[0]),
+            )
+        return ranked_lists[0][:top_k]
+
+    return _rrf_fusion(ranked_lists, final_top_k=top_k)
+
+
 def retrieve(
     query: str | RequestContext = "",
     top_k: int = RETRIEVAL_TOP_K,
@@ -630,11 +689,7 @@ def retrieve(
     symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
 
     # ── Fuse results ──────────────────────────────────────────────────────
-    all_nonempty_chunks = [r for r in [vector_chunks, keyword_chunks, symbol_chunks] if r]
-    if len(all_nonempty_chunks) > 1:
-        fused = _rrf_fusion(all_nonempty_chunks, final_top_k=top_k)
-    else:
-        fused = vector_chunks[:top_k]
+    fused = _fuse_ranked_lists(vector_chunks, keyword_chunks, symbol_chunks, top_k)
 
     # ── Format context for LLM ──────────────────────────────────────────
     structured_context = []
