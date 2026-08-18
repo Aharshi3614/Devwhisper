@@ -23,6 +23,12 @@ Architecture:
     Vapi (voice) → FastAPI (/webhook) → Retriever (hybrid search) →
     LLM (Groq) → FastAPI response → Vapi (TTS)
 
+Cache lifecycle:
+    Answers are cached per repository in cache.py. The background indexing
+    worker drops a repository's cached answers once a job has touched its
+    index, so a re-index is immediately visible to callers instead of being
+    masked by pre-re-index answers. Dry runs change nothing and are exempt.
+
 Security:
     Admin endpoints are protected by an X-Admin-Secret header and fail
     closed (401) if ADMIN_SECRET is not configured.
@@ -32,9 +38,10 @@ from fastapi import FastAPI, Request, Header, HTTPException, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata
+from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata, \
+    invalidate_bm25_cache
 from llm import generate_response, generate_response_stream
-from cache import get as cache_get, put as cache_put
+from cache import get as cache_get, put as cache_put, invalidate_repo as cache_invalidate_repo
 from handlers import route_command
 from errors import error_response
 from pipeline_validator import PipelineTracker, PipelineStageError
@@ -157,6 +164,53 @@ _reindex_last_checked_at = 0.0
 indexing_queue = get_indexing_queue()
 jobs_history = get_jobs_history()
 
+def invalidate_repo_caches(repo_id: str | None) -> None:
+    """
+    Drop everything this process is holding about *repo_id*'s old index.
+
+    Called when an indexing job has touched the index, so the next question
+    is answered from the code that is on disk now rather than from the
+    snapshot that was indexed before.
+
+    Two caches sit in front of retrieval:
+
+      - The response cache in ``cache.py``. This is the one that actually
+        hurts. Its entries are whole answers, complete with the
+        "Sources used:" footer, and they survive until 50 other distinct
+        queries evict them. After a re-index that renamed or deleted files,
+        that footer cites paths the repository no longer contains — which is
+        worse than a stale answer, because the citation makes it look
+        verified. Near-duplicate matching makes it stickier still: any
+        rephrasing within ``CACHE_SIMILARITY_THRESHOLD`` hits the same entry.
+
+      - The BM25 payload cached in ``retriever.py``. That one already
+        self-heals through its (mtime, size) stamp, so this call only makes
+        the reload immediate instead of waiting for the next stat().
+
+    Neither failure is worth taking the worker thread down for, so both are
+    contained.
+
+    Args:
+        repo_id: Repository whose caches to drop. ``None`` targets the
+            unscoped bucket used when no repository is registered.
+    """
+    try:
+        dropped = cache_invalidate_repo(repo_id)
+        if dropped:
+            logger.info(
+                "Dropped %d cached answer(s) for repository %s after indexing.",
+                dropped,
+                repo_id,
+            )
+    except Exception:
+        logger.error("Failed to invalidate the response cache", exc_info=True)
+
+    try:
+        invalidate_bm25_cache(repo_id)
+    except Exception:
+        logger.error("Failed to invalidate the BM25 cache", exc_info=True)
+
+
 def queue_worker():
     global progress_state
     while True:
@@ -230,6 +284,15 @@ def queue_worker():
                 })
             finally:
                 job["finished_at"] = time.time()
+
+                # A dry run uploads no vectors and rewrites no index, so its
+                # only effect here would be to throw away a warm cache for
+                # nothing. Everything else invalidates — including a job that
+                # failed, because index_directory() upserts in batches and a
+                # failure partway through still leaves the index changed.
+                if not job.get("dry_run", False):
+                    invalidate_repo_caches(job.get("repo_id"))
+
                 indexing_queue.task_done()
         except Exception as main_err:
             logger.error("Error in queue worker main loop: %s", main_err)
