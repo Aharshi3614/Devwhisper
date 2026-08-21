@@ -29,7 +29,7 @@ class SessionManager:
         self.max_sessions = max_sessions
         self.max_history_per_session = max_history_per_session
         self._clock = clock
-        self.sessions: OrderedDict[str, SessionData] = OrderedDict()
+        self.sessions: OrderedDict[str, SessionData] = OrderedDict()  # O(1) LRU eviction performance optimization
         self.lock = RLock()
 
     def update(self, session_id: str, user: str, assistant: str) -> None:
