@@ -9,7 +9,10 @@ from logger import logger
 import json
 import os
 import time
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
+from fastapi.concurrency import run_in_threadpool
 
 app = FastAPI()
 
@@ -22,7 +25,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- Per-session memory store ---
 # { session_id: {"history": [...], "last_used": <timestamp>} }
-conversation_sessions = {}
+conversation_sessions = OrderedDict()
+session_lock = threading.Lock()
 MAX_SESSIONS = 100
 MAX_HISTORY_PER_SESSION = 5
 
@@ -59,30 +63,32 @@ def _evict_if_needed():
     """Simple LRU eviction: drop the least-recently-used session if over cap."""
     if len(conversation_sessions) <= MAX_SESSIONS:
         return
-    oldest_id = min(
-        conversation_sessions,
-        key=lambda sid: conversation_sessions[sid]["last_used"]
-    )
-    del conversation_sessions[oldest_id]
+    conversation_sessions.popitem(last=False)
 
 
 def update_memory(session_id: str, user: str, assistant: str):
-    session = conversation_sessions.setdefault(
-        session_id, {"history": [], "last_used": time.time()}
-    )
-    session["history"].append(f"User: {user}\nAssistant: {assistant}")
-    if len(session["history"]) > MAX_HISTORY_PER_SESSION:
-        session["history"].pop(0)
-    session["last_used"] = time.time()
-    _evict_if_needed()
+    with session_lock:
+        session = conversation_sessions.pop(session_id, None)
+        if not session:
+            session = {"history": [], "last_used": time.time()}
+        
+        session["history"].append(f"User: {user}\nAssistant: {assistant}")
+        if len(session["history"]) > MAX_HISTORY_PER_SESSION:
+            session["history"].pop(0)
+        session["last_used"] = time.time()
+        
+        conversation_sessions[session_id] = session
+        _evict_if_needed()
 
 
 def get_memory(session_id: str) -> str:
-    session = conversation_sessions.get(session_id)
-    if not session:
-        return ""
-    session["last_used"] = time.time()
-    return "\n\n".join(session["history"])
+    with session_lock:
+        session = conversation_sessions.pop(session_id, None)
+        if not session:
+            return ""
+        session["last_used"] = time.time()
+        conversation_sessions[session_id] = session
+        return "\n\n".join(session["history"])
 
 
 # FIX: root route to prevent 502
@@ -97,13 +103,17 @@ async def get_stats():
     from retriever import client as qdrant_client
     from config import QDRANT_COLLECTION_NAME
     try:
-        collection_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+        collection_info = await run_in_threadpool(
+            qdrant_client.get_collection,
+            collection_name=QDRANT_COLLECTION_NAME
+        )
         
         # Determine number of unique files indexed by checking points
         unique_files = set()
         offset = None
         while True:
-            points, offset = qdrant_client.scroll(
+            points, offset = await run_in_threadpool(
+                qdrant_client.scroll,
                 collection_name=QDRANT_COLLECTION_NAME,
                 limit=100,
                 with_payload=["file"],
@@ -264,7 +274,8 @@ def health():
 @app.post("/reset")
 def reset_memory():
     """Clear all conversation history and return confirmation."""
-    conversation_sessions.clear()
+    with session_lock:
+        conversation_sessions.clear()
     return {"status": "memory cleared"}
 
 
@@ -383,7 +394,10 @@ def admin_list_sessions(x_admin_secret: str | None = Header(default=None, alias=
 
     now = time.time()
     sessions = []
-    for session_id, data in conversation_sessions.items():
+    with session_lock:
+        items = list(conversation_sessions.items())
+        
+    for session_id, data in items:
         last_used_ts = data.get("last_used", 0)
         try:
             last_used_iso = (
@@ -425,5 +439,6 @@ def get_history(session_id: str | None = None):
     if session_id:
         history = get_memory(session_id)
         return {"session_id": session_id, "history": history}
-    all_session_ids = list(conversation_sessions.keys())
+    with session_lock:
+        all_session_ids = list(conversation_sessions.keys())
     return {"session_ids": all_session_ids}
