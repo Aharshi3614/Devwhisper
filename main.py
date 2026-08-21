@@ -647,7 +647,7 @@ async def preview_prompt_endpoint(request: Request):
 
 
 @app.get("/statistics")
-def get_statistics():
+async def get_statistics():
     """
     Return repository and indexing statistics.
 
@@ -667,7 +667,7 @@ def get_statistics():
 
     try:
         try:
-            collection_info = qdrant_client.get_collection(target_collection)
+            collection_info = await run_in_threadpool(qdrant_client.get_collection, target_collection)
             collection_dict = (
                 collection_info.model_dump() if hasattr(collection_info, "model_dump")
                 else collection_info.dict() if hasattr(collection_info, "dict")
