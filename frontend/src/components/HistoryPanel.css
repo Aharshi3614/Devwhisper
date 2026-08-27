@@ -218,9 +218,36 @@
   background: var(--code-bg);
 }
 
-.sidebar-item--active {
-  background: var(--accent-bg);
-  color: var(--accent);
+.sidebar-item-container {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  transition: background 0.15s ease;
+}
+
+.sidebar-item-container:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+}
+
+.sidebar-item-container.sidebar-item--active {
+  background: var(--primary-light, rgba(99, 102, 241, 0.15));
+}
+
+.session-delete-btn {
+  font-size: 0.9rem;
+  opacity: 0.5;
+  transition: opacity 0.2s ease, transform 0.1s ease;
+}
+
+.session-delete-btn:hover {
+  opacity: 1 !important;
+  transform: scale(1.1);
+}
+
+.import-btn:hover {
+  border-color: var(--primary, #6366f1) !important;
+  color: var(--primary, #6366f1);
 }
 
 .sidebar-item-title {

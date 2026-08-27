@@ -1113,6 +1113,44 @@ def get_history(session_id: str | None = None):
         all_session_ids = list(conversation_sessions.keys())
     return {"session_ids": all_session_ids, "sessions": sessions_info}
 
+
+@app.delete("/history/{session_id}")
+def delete_history_session(session_id: str):
+    """
+    Delete a specific conversation session.
+    """
+    deleted = session_manager.delete_session(session_id)
+    if not deleted:
+        return error_response(404, f"Session '{session_id}' not found.")
+    return {"status": "deleted", "session_id": session_id}
+
+
+@app.get("/history/export/{session_id}")
+def export_history_session(session_id: str):
+    """
+    Export a conversation session as structured JSON.
+    """
+    exported = session_manager.export_session(session_id)
+    if exported is None:
+        return error_response(404, f"Session '{session_id}' not found.")
+    return {"status": "ok", "session": exported}
+
+
+@app.post("/history/import")
+def import_history_session(payload: dict):
+    """
+    Import a conversation session from JSON payload.
+    """
+    session_data = payload.get("session") if "session" in payload else payload
+    try:
+        session_id = session_manager.import_session(session_data)
+        return {"status": "imported", "session_id": session_id}
+    except ValueError as e:
+        return error_response(400, str(e))
+    except Exception:
+        logger.error("Failed to import session", exc_info=True)
+        return error_response(500, "Failed to import session.")
+
 def is_repository_change() -> bool:
     """
     Return True if the codebase has changed since the last indexing run.

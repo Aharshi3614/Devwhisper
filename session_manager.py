@@ -67,6 +67,58 @@ class SessionManager:
         with self.lock:
             self.sessions.clear()
 
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a single session by session_id. Returns True if existed and deleted."""
+        with self.lock:
+            if session_id in self.sessions:
+                del self.sessions[session_id]
+                return True
+            return False
+
+    def export_session(self, session_id: str) -> dict[str, Any] | None:
+        """Export session data with metadata and structured messages."""
+        with self.lock:
+            session = self.sessions.get(session_id)
+            if session is None:
+                return None
+            history_list = list(session.get("history", []))
+            return {
+                "session_id": session_id,
+                "last_used": session.get("last_used", self._clock()),
+                "message_count": len(history_list),
+                "history": history_list,
+                "exported_at": self._clock(),
+            }
+
+    def import_session(self, session_data: dict[str, Any]) -> str:
+        """Import a session into the manager, validating required fields."""
+        if not isinstance(session_data, dict):
+            raise ValueError("Session data must be a valid dictionary")
+        session_id = session_data.get("session_id")
+        if not session_id or not isinstance(session_id, str):
+            raise ValueError("Session data must contain a non-empty string 'session_id'")
+
+        raw_history = session_data.get("history", [])
+        if not isinstance(raw_history, list):
+            raw_history = []
+
+        history = [str(item) for item in raw_history]
+        overflow = len(history) - self.max_history_per_session
+        if overflow > 0:
+            history = history[overflow:]
+
+        last_used = float(session_data.get("last_used", self._clock()))
+
+        with self.lock:
+            self.sessions[session_id] = {
+                "history": history,
+                "last_used": last_used,
+            }
+            self.sessions.move_to_end(session_id)
+            self._evict_if_needed_locked()
+
+        return session_id
+
     def evict_if_needed(self) -> None:
         """Remove least-recently-used sessions until capacity is respected."""
         with self.lock:
