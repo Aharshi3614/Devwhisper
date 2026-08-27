@@ -77,3 +77,35 @@ def test_health_response_has_json_content_type(client):
     """The response Content-Type should be application/json."""
     response = client.get("/health")
     assert response.headers["content-type"].startswith("application/json")
+
+
+def test_health_diagnostics_endpoint(client, monkeypatch):
+    """GET /health/diagnostics should return subsystem health breakdown."""
+    import healthcheck
+
+    monkeypatch.setattr(healthcheck, "check_qdrant", lambda: (True, "Connected"))
+    monkeypatch.setattr(healthcheck, "check_embedder", lambda: (True, "384-dim"))
+    monkeypatch.setattr(healthcheck, "check_llm", lambda: (True, "pong"))
+
+    response = client.get("/health/diagnostics")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert "subsystems" in data
+    assert data["subsystems"]["qdrant"]["healthy"] is True
+    assert data["subsystems"]["embedder"]["healthy"] is True
+    assert data["subsystems"]["llm"]["healthy"] is True
+
+
+def test_healthcheck_get_diagnostics(monkeypatch):
+    """Unit test for healthcheck.get_diagnostics logic."""
+    import healthcheck
+
+    monkeypatch.setattr(healthcheck, "check_qdrant", lambda: (False, "Offline"))
+    monkeypatch.setattr(healthcheck, "check_embedder", lambda: (True, "384-dim"))
+    monkeypatch.setattr(healthcheck, "check_llm", lambda: (False, "Timeout"))
+
+    diag = healthcheck.get_diagnostics()
+    assert diag["status"] == "degraded"
+    assert diag["subsystems"]["qdrant"]["healthy"] is False
+    assert diag["subsystems"]["embedder"]["healthy"] is True

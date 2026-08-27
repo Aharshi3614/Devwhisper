@@ -96,6 +96,27 @@ def check_llm() -> tuple[bool, str]:
         return False, f"Could not reach Groq LLM API: {e}"
 
 
+def get_diagnostics() -> dict:
+    """
+    Run diagnostic checks across all subsystems and return structured results.
+    """
+    qdrant_ok, qdrant_msg = check_qdrant()
+    embedder_ok, embedder_msg = check_embedder()
+    
+    # LLM check is optional / quick
+    llm_ok, llm_msg = check_llm()
+
+    overall_ok = qdrant_ok and embedder_ok
+    return {
+        "status": "healthy" if overall_ok else "degraded",
+        "subsystems": {
+            "qdrant": {"healthy": qdrant_ok, "message": qdrant_msg},
+            "embedder": {"healthy": embedder_ok, "message": embedder_msg},
+            "llm": {"healthy": llm_ok, "message": llm_msg},
+        }
+    }
+
+
 def run_checks():
     checks = [
         ("Qdrant connection", check_qdrant),

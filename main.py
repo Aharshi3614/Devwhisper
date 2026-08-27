@@ -618,6 +618,18 @@ def health():
     return {"status": "ok", "message": "DevWhisper is running"}
 
 
+@app.get("/health/diagnostics")
+def health_diagnostics():
+    """
+    Detailed subsystem health diagnostics endpoint for Qdrant, embeddings, and LLM connectivity.
+    """
+    try:
+        from healthcheck import get_diagnostics
+        return get_diagnostics()
+    except Exception as e:
+        return error_response(500, f"Diagnostics failure: {e}")
+
+
 @app.post("/prompt/preview")
 async def preview_prompt_endpoint(request: Request):
     """
