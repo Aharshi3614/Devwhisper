@@ -22,6 +22,7 @@ export default function SettingsPanel() {
   const [repos, setRepos] = useState([])
   const [currentRepoId, setCurrentRepoId] = useState(null)
   const [repoPath, setRepoPath] = useState('')
+  const [llmInfo, setLlmInfo] = useState(null)
 
   useEffect(() => {
     localStorage.setItem('devwhisper_auto_submit', autoSubmitVoice)
@@ -91,12 +92,25 @@ export default function SettingsPanel() {
     }
   }, [])
 
+  const fetchLlmInfo = useCallback(async () => {
+    try {
+      const res = await fetch('/llm/info')
+      if (res.ok) {
+        const data = await res.json()
+        setLlmInfo(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch LLM info:', err)
+    }
+  }, [])
+
   useEffect(() => {
     if (!isOpen) return
     fetchRepos()
+    fetchLlmInfo()
     const timer = setInterval(fetchRepos, 3000)
     return () => clearInterval(timer)
-  }, [isOpen, fetchRepos])
+  }, [isOpen, fetchRepos, fetchLlmInfo])
 
   useEffect(() => {
     if (!isOpen) return
@@ -261,6 +275,19 @@ export default function SettingsPanel() {
                   </div>
                   <div className="setting-control">
                     <ThemeToggle />
+                  </div>
+                </div>
+              </div>
+
+              {/* LLM Model & Provider Information Section */}
+              <div className="settings-section">
+                <div className="setting-item vertical">
+                  <span className="setting-label">AI Engine & Provider</span>
+                  <span className="setting-desc">Active LLM configuration and telemetry diagnostics.</span>
+                  <div className="llm-info-box" style={{ marginTop: '8px', padding: '10px', background: 'var(--bg-secondary, rgba(0,0,0,0.05))', borderRadius: '6px', fontSize: '0.85rem' }}>
+                    <div>🤖 <strong>Engine:</strong> {llmInfo?.model || 'llama-3.3-70b-versatile'} ({llmInfo?.provider || 'Groq'})</div>
+                    <div>📡 <strong>Base URL:</strong> <code>{llmInfo?.base_url || 'https://api.groq.com/openai/v1'}</code></div>
+                    <div style={{ marginTop: '6px' }}>⚡ <strong>Total Queries Executed:</strong> {llmInfo?.total_requests ?? 0}</div>
                   </div>
                 </div>
               </div>

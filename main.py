@@ -658,6 +658,29 @@ async def preview_prompt_endpoint(request: Request):
     return JSONResponse(status_code=200, content=preview)
 
 
+@app.get("/llm/info")
+def get_llm_info():
+    """
+    Return active LLM provider configuration and model information.
+    """
+    from llm import get_llm_provider_info
+    return get_llm_provider_info()
+
+
+@app.get("/llm/telemetry")
+def get_llm_telemetry():
+    """
+    Return execution latency and token metrics for recent LLM calls.
+    """
+    from llm import get_llm_provider_info
+    info = get_llm_provider_info()
+    return {
+        "status": "ok",
+        "total_requests": info.get("total_requests", 0),
+        "recent_telemetry": info.get("recent_telemetry", []),
+    }
+
+
 @app.get("/statistics")
 def get_statistics():
     """

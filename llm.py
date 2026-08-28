@@ -85,6 +85,31 @@ def _get_model() -> str:
     return DEFAULT_OPENAI_COMPATIBLE_MODEL
 
 
+import time
+from typing import Dict, Any, Generator
+
+_llm_telemetry_records: list[Dict[str, Any]] = []
+
+def get_llm_provider_info() -> Dict[str, Any]:
+    """Return active LLM provider configuration, active model, and telemetry stats."""
+    provider = "custom" if LLM_API_KEY else "groq"
+    model = _get_model()
+    base_url = LLM_BASE_URL if LLM_API_KEY else DEFAULT_LLM_BASE_URL
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "is_custom_provider": bool(LLM_API_KEY),
+        "total_requests": len(_llm_telemetry_records),
+        "recent_telemetry": _llm_telemetry_records[-10:],
+    }
+
+def record_telemetry(data: Dict[str, Any]) -> None:
+    """Store recent execution telemetry metrics."""
+    _llm_telemetry_records.append(data)
+    if len(_llm_telemetry_records) > 50:
+        del _llm_telemetry_records[:-50]
+
 from request_context import RequestContext
 
 def generate_response(
@@ -102,6 +127,8 @@ def generate_response(
         user_query = req_context.user_query
     elif req_context is not None and not user_query:
         user_query = req_context.user_query
+    
+    start_time = time.time()
     try:
         client = _get_client()
         model = _get_model()
@@ -111,18 +138,32 @@ def generate_response(
             messages=messages,
         )
 
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+
         if response.choices:
-            # Capture and log token usage statistics if available
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
             if hasattr(response, "usage") and response.usage:
-                prompt_tokens = response.usage.prompt_tokens
-                completion_tokens = response.usage.completion_tokens
-                total_tokens = response.usage.total_tokens
+                prompt_tokens = response.usage.prompt_tokens or 0
+                completion_tokens = response.usage.completion_tokens or 0
+                total_tokens = response.usage.total_tokens or 0
                 logger.info(
                     "Token Usage - Prompt: %d, Completion: %d, Total: %d",
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
                 )
+
+            record_telemetry({
+                "type": "sync",
+                "model": model,
+                "duration_ms": duration_ms,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "timestamp": time.time(),
+            })
 
             return response.choices[0].message.content
 
@@ -138,7 +179,7 @@ def generate_response_stream(user_query: str, context: str, history: str = ""):
     Generate a streaming response for a user query.
 
     Yields tokens as they are received from the LLM, enabling real-time
-    response display (e.g., in the /stream endpoint).
+    response display (e.g., in the /stream endpoint). Tracks token count and latency.
 
     Args:
         user_query: The user's natural language or code question.
@@ -148,9 +189,11 @@ def generate_response_stream(user_query: str, context: str, history: str = ""):
     Yields:
         Individual text tokens (strings) from the LLM response.
     """
+    start_time = time.time()
+    token_count = 0
+    model = _get_model()
     try:
         client = _get_client()
-        model = _get_model()
         messages = build_messages(user_query, context, history)
         response = client.chat.completions.create(
             model=model,
@@ -160,7 +203,18 @@ def generate_response_stream(user_query: str, context: str, history: str = ""):
 
         for chunk in response:
             if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+                token_chunk = chunk.choices[0].delta.content
+                token_count += 1
+                yield token_chunk
+
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        record_telemetry({
+            "type": "stream",
+            "model": model,
+            "duration_ms": duration_ms,
+            "token_chunks": token_count,
+            "timestamp": time.time(),
+        })
 
     except Exception:
         logger.error("LLM STREAM ERROR", exc_info=True)
