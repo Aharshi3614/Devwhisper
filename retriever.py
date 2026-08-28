@@ -625,6 +625,108 @@ def _rrf_fusion(
     return final
 
 
+# ---------------------------------------------------------------------------
+# Dense vector search
+# ---------------------------------------------------------------------------
+# Substrings Qdrant uses when the collection itself is absent. A missing
+# collection is a configuration/indexing problem worth naming in the log,
+# where a timeout is transient and needs no operator action — so the two are
+# reported differently even though both degrade the same way.
+_MISSING_COLLECTION_MARKERS = ("doesn't exist", "does not exist", "not found", "404")
+
+
+def _is_missing_collection_error(error: BaseException) -> bool:
+    """Best-effort check for "that collection is not there"."""
+    text = str(error).lower()
+    return any(marker in text for marker in _MISSING_COLLECTION_MARKERS)
+
+
+def _dense_search(
+    collection_name: str,
+    vector: list[float],
+    query_filter,
+    limit: int,
+) -> tuple[list[dict], bool]:
+    """
+    Run dense vector search, degrading to an empty list rather than raising.
+
+    ``_fuse_ranked_lists()`` was written to answer from BM25 and symbol
+    matching alone when dense search contributes nothing, and its docstring
+    names the missing-collection case explicitly. But a missing collection is
+    not an empty result — ``query_points()`` raises a 404 — so the exception
+    propagated out of ``retrieve()`` and the sparse retrievers below it never
+    ran. The sparse-only fallback added for #267 was unreachable for exactly
+    the situation it describes (#294).
+
+    The collection and the BM25 pickle are written at different points in
+    ``index_directory()`` and are not transactional, so they go out of step
+    routinely: ``create_collection()`` is skipped entirely under
+    ``--incremental`` when the collection already exists, a crash between the
+    upserts and the pickle write leaves either one ahead, and the collection
+    can be dropped by an operator or lost to a Qdrant restart on ephemeral
+    storage. Every one of those turned an answerable query into a 500.
+
+    Args:
+        collection_name: Qdrant collection to query.
+        vector: The encoded query vector.
+        query_filter: Optional Qdrant filter, or None.
+        limit: Maximum number of points to request.
+
+    Returns:
+        ``(chunks, ok)``. *ok* is False when dense search failed, which lets
+        the caller tell "nothing matched" apart from "retrieval was broken" —
+        both produce an empty context string otherwise.
+    """
+    try:
+        qdrant_result = client.query_points(
+            collection_name=collection_name,
+            query=vector,
+            query_filter=query_filter,
+            limit=limit,
+            score_threshold=QDRANT_SIMILARITY_THRESHOLD,
+        )
+    except Exception as error:
+        if _is_missing_collection_error(error):
+            logger.warning(
+                "Qdrant collection %r is missing - answering from sparse "
+                "retrieval only. Re-index this repository to restore vector "
+                "search.",
+                collection_name,
+            )
+        else:
+            logger.warning(
+                "Dense search against %r failed (%s: %s) - falling back to "
+                "sparse retrieval.",
+                collection_name,
+                type(error).__name__,
+                error,
+            )
+        return [], False
+
+    # qdrant_result may be an object with a .points attribute (Qdrant client) or
+    # a simple iterable. Normalize to an iterable of points for testability.
+    points_iterable = getattr(qdrant_result, "points", qdrant_result)
+
+    chunks = []
+    for idx, point in enumerate(points_iterable):
+        payload = getattr(point, "payload", None) or {}
+        chunks.append({
+            "_idx": f"v_{idx}",
+            "text": payload.get("text", ""),
+            "file": payload.get("file", "unknown"),
+            "repository": payload.get("repository", ""),
+            "start_line": payload.get("start_line", "?"),
+            "end_line": payload.get("end_line"),
+            "symbol_name": payload.get("symbol_name"),
+            "symbol_type": payload.get("symbol_type"),
+            "parent_class": payload.get("parent_class"),
+            "docstring": payload.get("docstring"),
+            "is_symbol": payload.get("is_symbol", False),
+            "score": getattr(point, "score", None),
+        })
+    return chunks, True
+
+
 def check_embedding_version(repo_id: str | None = None) -> None:
     """
     Verify that the embedding version in the index matches the configured version.
@@ -818,18 +920,6 @@ def retrieve(
     # repository-name filter in shared-collection mode (repo_id is None).
     qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
 
-    qdrant_result = client.query_points(
-        collection_name=target_collection,
-        query=vector,
-        query_filter=qdrant_filter,
-        limit=query_limit,
-        score_threshold=QDRANT_SIMILARITY_THRESHOLD,
-    )
-
-    # qdrant_result may be an object with a .points attribute (Qdrant client) or
-    # a simple iterable. Normalize to an iterable of points for testability.
-    points_iterable = getattr(qdrant_result, "points", qdrant_result)
-
     # Expose the last query vector into builtins so older tests that reference
     # the name `vector` directly (unqualified) can still assert against it.
     try:
@@ -838,24 +928,9 @@ def retrieve(
     except Exception:
         pass
 
-    vector_chunks = []
-    for idx, point in enumerate(points_iterable):
-        payload = point.payload or {}
-        repo_name = payload.get("repository", "")
-        vector_chunks.append({
-            "_idx": f"v_{idx}",
-            "text": payload.get("text", ""),
-            "file": payload.get("file", "unknown"),
-            "repository": repo_name,
-            "start_line": payload.get("start_line", "?"),
-            "end_line": payload.get("end_line"),
-            "symbol_name": payload.get("symbol_name"),
-            "symbol_type": payload.get("symbol_type"),
-            "parent_class": payload.get("parent_class"),
-            "docstring": payload.get("docstring"),
-            "is_symbol": payload.get("is_symbol", False),
-            "score": getattr(point, "score", None)
-        })
+    vector_chunks, dense_ok = _dense_search(
+        target_collection, vector, qdrant_filter, query_limit
+    )
 
     # ── Sparse keyword search (BM25) ────────────────────────────────────
     keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
@@ -866,6 +941,18 @@ def retrieve(
 
     # ── Fuse results ──────────────────────────────────────────────────────
     fused = _fuse_ranked_lists(vector_chunks, keyword_chunks, symbol_chunks, top_k)
+
+    if not fused and not dense_ok:
+        # Every retriever came back empty *and* the dense one failed. That is
+        # a broken index, not a repository without an answer, and the two must
+        # not be reported identically — the LLM says "I could not find this in
+        # your codebase" either way, which is actively misleading when the
+        # real cause is a missing collection.
+        logger.error(
+            "Retrieval produced no results and dense search failed for "
+            "collection %r; the index is likely missing or unreachable.",
+            target_collection,
+        )
 
     # ── Format context for LLM ──────────────────────────────────────────
     structured_context = []
