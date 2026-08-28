@@ -201,6 +201,73 @@ def collect_indexable_files(
     return files_to_index, skipped
 
 
+# ---------------------------------------------------------------------------
+# Deterministic Qdrant point ids
+# ---------------------------------------------------------------------------
+# Namespace for chunk ids. A dedicated namespace rather than NAMESPACE_OID so
+# the ids cannot collide with anything else that happens to be uuid5'd from an
+# OID string, and so the scheme can be versioned later by minting a new one.
+CHUNK_ID_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
+
+
+def chunk_point_id(chunk: dict, path: str, repository: str | None = None) -> str:
+    """
+    Return the deterministic Qdrant point id for *chunk*.
+
+    The id has to satisfy two competing requirements:
+
+      1. **Stable** — re-indexing an unchanged file must produce the same id,
+         or every run leaves the previous run's points orphaned in the
+         collection and the index grows without bound.
+      2. **Unique per chunk** — two different chunks must never share an id,
+         because ``client.upsert()`` silently treats the second as an update
+         of the first and the first is lost.
+
+    The old key was ``f"{path}_{chunk['start_line']}"``, which satisfies (1)
+    but not (2). ``start_line`` is not unique within a file: a class longer
+    than ``INDEX_CHUNK_SIZE`` is split into parts by ``_chunk_source_region()``
+    at ``start + n * (chunk_size - overlap)``, and one of those offsets
+    regularly lands on the first line of one of the class's own methods. Both
+    chunks then hash to the same UUID and Qdrant keeps one of them.
+
+    On this repository's own source that costs three chunks:
+    ``_SymbolExtractor`` part 3 vs ``_extract_docstring`` (line 40),
+    ``_SymbolExtractor`` part 5 vs ``visit_FunctionDef`` (line 76), and
+    ``PipelineTracker`` part 3 vs ``last_stage`` (line 131).
+
+    The BM25 pickle is written from the same chunk list but keyed by list
+    offset, so it keeps both. That is the real damage: the sparse and dense
+    retrievers end up indexing different corpora, and ``_rrf_fusion()`` stops
+    being able to award its cross-list boost to precisely the chunks that
+    earned it.
+
+    Args:
+        chunk: The chunk payload, as produced by ``get_file_chunks()``.
+        path: Path to the source file. The full path, not the basename —
+            two ``utils.py`` in different packages are different files.
+        repository: Repository name. Included so that shared-collection mode,
+            where several repositories write into ``QDRANT_COLLECTION_NAME``,
+            cannot collide on a relative path the repositories have in common.
+
+    Returns:
+        A UUID string suitable for ``PointStruct(id=...)``.
+    """
+    # Every field that distinguishes one chunk of one file from another.
+    # Joined with a separator that cannot appear in a path or an identifier,
+    # so "a|b" and "a" + "|b" cannot produce the same key.
+    parts = (
+        repository or "",
+        path,
+        str(chunk.get("start_line", "")),
+        str(chunk.get("end_line", "")),
+        chunk.get("parent_class") or "",
+        chunk.get("symbol_name") or "",
+        str(chunk.get("symbol_part") or ""),
+        "s" if chunk.get("is_symbol") else "m",
+    )
+    return str(uuid.uuid5(CHUNK_ID_NAMESPACE, "\x1f".join(parts)))
+
+
 def create_collection(collection_name: str) -> None:
     """
     (Re)create the Qdrant collection with cosine distance and the configured embedding dimension.
@@ -519,8 +586,14 @@ def generate_embeddings(chunks: list[dict], repo_name: str) -> list[PointStruct]
     for chunk in chunks:
         chunk["repository"] = repo_name
         vector = embedder.encode(chunk["text"]).tolist()
-        unique_str = f"{chunk['file']}_{chunk['start_line']}"
-        stable_id = str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
+        # ``chunk['file']`` is the basename, so this used to collide across
+        # directories as well as within a file. ``chunk_point_id()`` takes the
+        # best path available on the payload and mixes in the symbol identity.
+        stable_id = chunk_point_id(
+            chunk,
+            chunk.get("path") or chunk.get("file", ""),
+            repo_name,
+        )
         points.append(
             PointStruct(
                 id=stable_id,
@@ -529,6 +602,44 @@ def generate_embeddings(chunks: list[dict], repo_name: str) -> list[PointStruct]
             )
         )
     return points
+
+
+def drop_duplicate_points(points: list[PointStruct]) -> list[PointStruct]:
+    """
+    Return *points* with duplicate ids removed, warning about each one.
+
+    ``chunk_point_id()`` is supposed to make this a no-op. It exists so that a
+    regression in the id scheme shows up in the log as a named collision
+    rather than as chunks quietly going missing from the collection — which is
+    how the ``(path, start_line)`` scheme managed to lose chunks unnoticed.
+
+    The first point wins, matching what Qdrant would have done with the last
+    one; either choice loses data, so the point is the warning, not the
+    survivor.
+
+    Args:
+        points: Points about to be upserted.
+
+    Returns:
+        The points with a unique id each, in their original order.
+    """
+    seen: set = set()
+    unique = []
+    for point in points:
+        if point.id in seen:
+            payload = getattr(point, "payload", None) or {}
+            logger.warning(
+                "Duplicate point id %s for %s:%s (symbol=%s) - chunk dropped. "
+                "This is an id-scheme bug, not a source-file problem.",
+                point.id,
+                payload.get("file", "?"),
+                payload.get("start_line", "?"),
+                payload.get("symbol_name") or "-",
+            )
+            continue
+        seen.add(point.id)
+        unique.append(point)
+    return unique
 
 
 def upload_vectors(
@@ -541,6 +652,8 @@ def upload_vectors(
     """
     if not points:
         return 0
+
+    points = drop_duplicate_points(points)
 
     total_uploaded = 0
     for i in range(0, len(points), batch_size):
@@ -627,7 +740,7 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
             if not points:
                 return
 
-            batch = points
+            batch = drop_duplicate_points(points)
             points = []
             client.upsert(
                 collection_name=target_collection,
@@ -692,8 +805,7 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
                 for chunk in chunks:
                     chunk["repository"] = repo_name
                     vector = embedder.encode(chunk["text"]).tolist()
-                    unique_str = f"{path}_{chunk['start_line']}"
-                    stable_id = str(uuid.uuid5(uuid.NAMESPACE_OID, unique_str))
+                    stable_id = chunk_point_id(chunk, path, repo_name)
                     points.append(
                         PointStruct(
                             id=stable_id,
