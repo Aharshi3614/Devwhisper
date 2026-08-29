@@ -54,6 +54,8 @@ from config import (
     QDRANT_URL,
     SAMPLE_CODEBASE_DIRECTORY,
     SUPPORTED_EXTENSIONS,
+    SYMBOL_EXTENSIONS,
+    EXTENSION_LANGUAGES,
     BM25_INDEX_PATH,
 )
 from logger import logger
@@ -288,6 +290,25 @@ def create_collection(collection_name: str) -> None:
     )
 
 
+def detect_language(filepath: str) -> str | None:
+    """
+    Return the language name for *filepath*, or None when it is not known.
+
+    Derived from the extension via ``EXTENSION_LANGUAGES`` rather than by
+    sniffing the contents: the indexer has already decided to index this file
+    on the strength of its extension, so disagreeing with that here would only
+    produce chunks whose recorded language contradicts the chunker that
+    produced them.
+
+    Args:
+        filepath: Path to the source file.
+
+    Returns:
+        A lower-case language name, or None for an extension with no mapping.
+    """
+    return EXTENSION_LANGUAGES.get(os.path.splitext(filepath)[1].lower())
+
+
 def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
     """
     Split a source file into overlapping line-based chunks.
@@ -312,6 +333,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
         lines = file_handle.readlines()
 
     chunks = []
+    language = detect_language(filepath)
     step = chunk_size - INDEX_CHUNK_OVERLAP
     for index in range(0, len(lines), step):
         chunk = "".join(lines[index:index + chunk_size])
@@ -320,6 +342,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
                 {
                     "text": chunk,
                     "file": os.path.basename(filepath),
+                    "language": language,
                     "start_line": index + 1,
                     "is_symbol": False,
                 }
@@ -418,7 +441,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     Other file types retain the existing overlapping line-based strategy.
     """
     ext = os.path.splitext(filepath)[1].lower()
-    if ext not in (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs"):
+    if ext not in SYMBOL_EXTENSIONS:
         return chunk_file(filepath, chunk_size=chunk_size)
 
     if chunk_size <= INDEX_CHUNK_OVERLAP:
@@ -437,10 +460,12 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
 
     chunks = []
     filename = os.path.basename(filepath)
+    language = detect_language(filepath)
 
     for sym in symbols:
         metadata = {
             "file": filename,
+            "language": language,
             "symbol_name": sym.name,
             "symbol_type": sym.symbol_type,
             "parent_class": sym.parent_class,
@@ -480,6 +505,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
                 chunk_size,
                 {
                     "file": filename,
+                    "language": language,
                     "is_symbol": False,
                     "chunk_type": "module_context",
                 },

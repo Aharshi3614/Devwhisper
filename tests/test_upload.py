@@ -78,18 +78,27 @@ def test_upload_rejects_path_traversal(client):
 
 
 def test_upload_rejects_no_supported_files(client):
-    """ZIP must contain at least one supported file extension (.py, .md)."""
+    """ZIP must contain at least one file with a supported extension.
+
+    The message lists SUPPORTED_EXTENSIONS rather than a hardcoded pair, so
+    this asserts against the same constant the endpoint filters on (#309).
+    """
+    from config import SUPPORTED_EXTENSIONS
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zip_file:
         zip_file.writestr("readme.txt", "unsupported text file content")
-    
+
     zip_buffer.seek(0)
     response = client.post(
         "/index/upload",
         files={"file": ("unsupported.zip", zip_buffer.read(), "application/zip")}
     )
     assert response.status_code == 400
-    assert "No supported files (.py, .md) found in the uploaded ZIP archive" in response.json()["message"]
+    message = response.json()["message"]
+    assert "No supported files" in message
+    for extension in SUPPORTED_EXTENSIONS:
+        assert extension in message
 
 
 def test_upload_success_starts_indexing(client):
