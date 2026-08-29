@@ -221,6 +221,27 @@ class PipelineTracker:
 
 
 # ---------------------------------------------------------------------------
+# Indexing Pipeline Definition
+# ---------------------------------------------------------------------------
+
+INDEXING_PIPELINE_STAGES: tuple[str, ...] = (
+    "collect_files",
+    "extract_symbols",
+    "generate_chunks",
+    "embed_and_upsert",
+    "persist_cache",
+)
+
+
+@dataclass
+class IndexingPipelineTracker(PipelineTracker):
+    """Pipeline tracker specialized for codebase indexing stages."""
+
+    stages: tuple[str, ...] = INDEXING_PIPELINE_STAGES
+
+
+
+# ---------------------------------------------------------------------------
 # Convenience function
 # ---------------------------------------------------------------------------
 
@@ -238,10 +259,21 @@ def validate_stage_sequence(stages: list[str]) -> None:
         tracker.enter(stage)
 
 
+def validate_indexing_sequence(stages: list[str]) -> None:
+    """Validate that an indexing stage sequence executes forward."""
+    tracker = IndexingPipelineTracker()
+    for stage in stages:
+        tracker.enter(stage)
+
+
 __all__ = [
     "PIPELINE_STAGES",
     "STAGE_LABELS",
+    "INDEXING_PIPELINE_STAGES",
     "PipelineStageError",
     "PipelineTracker",
+    "IndexingPipelineTracker",
     "validate_stage_sequence",
+    "validate_indexing_sequence",
 ]
+
