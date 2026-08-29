@@ -29,6 +29,7 @@ Dependencies:
   - rank_bm25 (sparse keyword search)
 """
 
+import heapq
 import json
 import os
 import pickle
@@ -122,11 +123,13 @@ def invalidate_bm25_cache(repo_id: str | None = None) -> None:
             use :func:`clear_bm25_cache` to drop everything.
     """
     _bm25_data.pop(repo_id, None)
+    _symbol_index.pop(repo_id, None)
 
 
 def clear_bm25_cache() -> None:
     """Drop every cached BM25 index (all repositories)."""
     _bm25_data.clear()
+    _symbol_index.clear()
 
 
 def _get_bm25(repo_id: str | None) -> dict | None:
@@ -339,6 +342,49 @@ def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[st
     return qdrant_models.Filter(must=conditions) if conditions else None
 
 
+# How many extra candidates to pull past ``top_k`` before filtering. Metadata
+# and repository filters discard some of what BM25 ranks highest, so taking
+# exactly top_k would come up short whenever a filter is active. A multiplier
+# rather than fixed slack, so it scales with top_k.
+_CANDIDATE_OVERSHOOT = 4
+
+
+def _top_scoring_indices(scores, limit: int) -> list[int]:
+    """
+    Return the indices of the *limit* highest scores, best first.
+
+    This used to be a full sort of the whole corpus:
+
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+
+    ``O(N log N)`` with a Python-level ``key`` callback invoked N times, to
+    satisfy a ``HYBRID_TOP_K`` of 20. On a real target codebase — hundreds of
+    thousands of chunks — that is a large sort per question, on the request
+    thread, entirely to throw away all but twenty rows (issue #296).
+
+    ``heapq.nlargest`` is ``O(N log k)``, but the bigger win is that most
+    chunks never reach the heap at all: BM25 scores 0.0 for every chunk
+    sharing no term with the query, and that is the overwhelming majority.
+
+    Ordering is unchanged, ties included. ``nlargest`` over ``(score, -index)``
+    breaks ties by ascending index, which is what a stable descending sort of
+    ``range(len(scores))`` produced.
+
+    Args:
+        scores: Per-chunk BM25 scores.
+        limit: How many indices to return.
+
+    Returns:
+        Indices of the highest scoring chunks, best first. Chunks scoring zero
+        or less are never included — they share no term with the query.
+    """
+    if limit <= 0:
+        return []
+
+    candidates = ((score, -idx) for idx, score in enumerate(scores) if score > 0)
+    return [-neg_idx for _, neg_idx in heapq.nlargest(limit, candidates)]
+
+
 def _keyword_search(
     query: str,
     top_k: int = HYBRID_TOP_K,
@@ -354,27 +400,52 @@ def _keyword_search(
     tokenize_query = _tokenize(query)
     bm25 = bm25_data["bm25"]
     scores = bm25.get_scores(tokenize_query)
-    top_indices = sorted(
-        range(len(scores)), key=lambda i: scores[i], reverse=True
-    )
 
-    results = []
-    for idx in top_indices:
-        if scores[idx] > 0:
-            chunk = bm25_data["chunks"][idx].copy()
+    chunks = bm25_data["chunks"]
+    filtering = bool(metadata_filter or repository_names)
+
+    # Without a filter, the top top_k candidates are the answer and any
+    # overshoot is wasted work. With one, some of the best-scoring candidates
+    # will be discarded, so pull extra — and widen if that still falls short,
+    # rather than silently returning fewer results than asked for. A narrow
+    # filter (one file out of hundreds) needs a much deeper look than a broad
+    # one, and only it pays for that.
+    limit = top_k * _CANDIDATE_OVERSHOOT if filtering else top_k
+
+    while True:
+        candidates = _top_scoring_indices(scores, limit)
+        exhausted = len(candidates) < limit
+
+        results = []
+        for idx in candidates:
+            chunk = chunks[idx]
             # Apply metadata filter
             if not _matches_metadata_filter(chunk, metadata_filter):
                 continue
             # Apply repository filter if specified
-            if repository_names and chunk.get("repository") and chunk.get("repository") not in repository_names:
+            if (
+                repository_names
+                and chunk.get("repository")
+                and chunk.get("repository") not in repository_names
+            ):
                 continue
 
+            # Copied only once it is known to be a result, rather than for
+            # every candidate the filters are about to throw away.
+            chunk = chunk.copy()
             chunk["bm25_score"] = float(scores[idx])
             chunk["_idx"] = idx
             results.append(chunk)
-        if len(results) >= top_k:
-            break
-    return results
+
+            if len(results) >= top_k:
+                return results
+
+        # Fewer than top_k survived. Widen, unless every chunk that scores
+        # above zero has already been considered — beyond that there is
+        # nothing left to find, because BM25 gave the rest no score at all.
+        if exhausted:
+            return results
+        limit *= _CANDIDATE_OVERSHOOT
 
 
 # Question words and other sentence scaffolding that must never be treated as
@@ -450,6 +521,88 @@ def _extract_symbols(query: str) -> list[str]:
     return list(symbols)
 
 
+# Symbol lookup tables, one per repository, derived from the BM25 corpus:
+# {repo_id: (chunks, {lowercased symbol name: [chunk index, ...]},
+#            [indices of chunks with no symbol name])}
+#
+# The corpus list itself is held and compared with ``is``, so a reloaded BM25
+# payload — which ``_get_bm25()`` swaps in whenever the pickle changes on disk
+# — invalidates this automatically. Rebuilding costs one pass over the corpus
+# and happens once per re-index rather than once per query.
+#
+# Deliberately not keyed on ``id(chunks)``: CPython reuses the address of a
+# freed object, so once the previous corpus is dropped a newly allocated one
+# can land on the same id and silently inherit a stale index whose indices
+# point into a corpus that no longer exists. Holding the reference both makes
+# the comparison sound and keeps that from happening.
+_symbol_index: dict[
+    str | None, tuple[list[dict], dict[str, list[int]], list[int]]
+] = {}
+
+
+def clear_symbol_index() -> None:
+    """Drop every cached symbol lookup table."""
+    _symbol_index.clear()
+
+
+def _get_symbol_index(
+    repo_id: str | None,
+    chunks: list[dict],
+) -> tuple[dict[str, list[int]], list[int]]:
+    """
+    Return ``(by_name, text_only)`` lookup tables for *chunks*.
+
+    ``by_name`` maps a lowercased symbol name to the indices of the symbol
+    chunks carrying it. ``text_only`` lists the indices of everything else —
+    module-level chunks and payloads with no symbol name — which are the only
+    chunks that still need a full-text scan.
+
+    :func:`_exact_symbol_search` used to enumerate the entire corpus and ask
+    each chunk in turn whether its name was in the requested symbol list. For
+    the symbol chunks — the majority in any Python or JavaScript repository —
+    that is a dict lookup being done as a linear scan.
+
+    Args:
+        repo_id: Repository the corpus belongs to, used as the cache key.
+        chunks: The BM25 corpus.
+
+    Returns:
+        The two lookup tables.
+    """
+    cached = _symbol_index.get(repo_id)
+    if cached is not None and cached[0] is chunks:
+        return cached[1], cached[2]
+
+    by_name: dict[str, list[int]] = {}
+    text_only: list[int] = []
+    for idx, chunk in enumerate(chunks):
+        name = chunk.get("symbol_name")
+        if chunk.get("is_symbol", False) and name:
+            by_name.setdefault(name.lower(), []).append(idx)
+        else:
+            text_only.append(idx)
+
+    _symbol_index[repo_id] = (chunks, by_name, text_only)
+    return by_name, text_only
+
+
+def _passes_filters(
+    chunk: dict,
+    metadata_filter: dict | None,
+    repository_names: list[str] | None,
+) -> bool:
+    """Shared metadata + repository predicate for the sparse retrievers."""
+    if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
+        return False
+    if (
+        repository_names
+        and chunk.get("repository")
+        and chunk.get("repository") not in repository_names
+    ):
+        return False
+    return True
+
+
 def _exact_symbol_search(
     symbols: list[str],
     top_k: int = HYBRID_TOP_K,
@@ -459,6 +612,23 @@ def _exact_symbol_search(
 ) -> list[dict]:
     """
     Find chunks with exact symbol name matches, filtered by metadata and repositories, ranked by match count.
+
+    Two branches, as before, but neither enumerates the whole corpus any more:
+
+      * a chunk that *is* a symbol matches on its own name, which is an O(1)
+        lookup in the table :func:`_get_symbol_index` builds once per corpus;
+      * everything else needs the word-boundary text scan, and only those
+        chunks are visited.
+
+    Args:
+        symbols: Symbol candidates extracted from the query.
+        top_k: Maximum number of matches to return.
+        metadata_filter: Optional payload key/value equality filters.
+        repo_id: Repository whose corpus to search.
+        repository_names: Restrict results to these repository names.
+
+    Returns:
+        Matching chunks, best first, each carrying ``exact_match_count``.
     """
 
     # Checked before touching the index: with the symbol list now correctly
@@ -471,7 +641,31 @@ def _exact_symbol_search(
     if bm25_data is None:
         return []
 
-    # Compiled once for the whole corpus scan rather than per chunk.
+    chunks = bm25_data["chunks"]
+    by_name, text_only = _get_symbol_index(repo_id, chunks)
+
+    matches = []
+    seen: set[int] = set()
+
+    # ── Symbol chunks: direct lookup, no scan ──────────────────────────────
+    for sym in symbols:
+        for idx in by_name.get(sym.lower(), ()):
+            if idx in seen:
+                # Two extracted symbols matching one chunk name cannot happen
+                # (the name is a single string), but _extract_symbols() can
+                # return the same candidate in two casings.
+                continue
+            chunk = chunks[idx]
+            if not _passes_filters(chunk, metadata_filter, repository_names):
+                continue
+            seen.add(idx)
+            result = chunk.copy()
+            result["exact_match_count"] = 1
+            result["_idx"] = f"s_{idx}"
+            matches.append(result)
+
+    # ── Everything else: word-boundary scan over the remainder ─────────────
+    # Compiled once for the scan rather than per chunk.
     # \b anchors each symbol to a word boundary, so searching for "get" stops
     # scoring chunks that merely contain "budget", "target" or "forget".
     # Python treats "_" as a word character, so snake_case names are matched
@@ -480,31 +674,22 @@ def _exact_symbol_search(
         re.compile(r"\b" + re.escape(sym.lower()) + r"\b") for sym in symbols
     ]
 
-    matches = []
-    for idx, chunk in enumerate(bm25_data["chunks"]):
-        if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
-            continue
-        if repository_names and chunk.get("repository") and chunk.get("repository") not in repository_names:
+    for idx in text_only:
+        chunk = chunks[idx]
+        if not _passes_filters(chunk, metadata_filter, repository_names):
             continue
 
-        chunk_name = chunk.get("symbol_name")
-        is_symbol = chunk.get("is_symbol", False)
-
-        if is_symbol and chunk_name:
-            count = sum(
-                1 for sym in symbols if chunk_name.lower() == sym.lower()
-            )
-        else:
-            text_lower = chunk["text"].lower()
-            count = sum(len(pattern.findall(text_lower)) for pattern in symbol_patterns)
-
+        text_lower = chunk["text"].lower()
+        count = sum(len(pattern.findall(text_lower)) for pattern in symbol_patterns)
         if count > 0:
             result = chunk.copy()
             result["exact_match_count"] = count
             result["_idx"] = f"s_{idx}"
             matches.append(result)
 
-    matches.sort(key=lambda x: -x["exact_match_count"])
+    # Ordered by match count, then by corpus position — the same result the
+    # previous full enumeration plus stable sort produced.
+    matches.sort(key=lambda x: (-x["exact_match_count"], int(x["_idx"][2:])))
     return matches[:top_k]
 
 
