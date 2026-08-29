@@ -378,8 +378,11 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
         ),
     )
 
-SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md"})
+SUPPORTED_EXTENSIONS: Final = frozenset(
+    {".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java"}
+)
 """File extensions eligible for indexing."""
+
 
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"

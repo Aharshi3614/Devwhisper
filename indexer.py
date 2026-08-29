@@ -351,7 +351,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     Other file types retain the existing overlapping line-based strategy.
     """
     ext = os.path.splitext(filepath)[1].lower()
-    if ext not in (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs"):
+    if ext not in (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".go", ".rs", ".java"):
         return chunk_file(filepath, chunk_size=chunk_size)
 
     if chunk_size <= INDEX_CHUNK_OVERLAP:
@@ -378,8 +378,11 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
             "symbol_type": sym.symbol_type,
             "parent_class": sym.parent_class,
             "docstring": sym.docstring,
+            "language": sym.language,
+            "signature": sym.signature,
             "is_symbol": True,
         }
+
         symbol_chunks = _chunk_source_region(
             lines,
             sym.start_line,
