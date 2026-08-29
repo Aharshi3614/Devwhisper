@@ -52,12 +52,14 @@ from config import (
 )
 from logger import logger
 from request_context import RequestContext
+from retrieval_cache import retrieval_cache
 
 # ---------------------------------------------------------------------------
 # Qdrant client and embedder (module-level singletons)
 # ---------------------------------------------------------------------------
 client = vector_store.client
 embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
+
 
 # ---------------------------------------------------------------------------
 # BM25 index (lazy-loaded per repository, reloaded when the file changes)
@@ -810,62 +812,68 @@ def retrieve(
     elif isinstance(repositories, list):
         repo_list = repositories
 
-    # ── Dense vector search (Qdrant) ────────────────────────────────────
-    vector = embedder.encode(query).tolist()
-    query_limit = HYBRID_TOP_K if _get_bm25(repo_id) is not None else top_k
-    # Repo-isolated collections already scope results to one repository, and
-    # legacy payloads have no ``repository`` tag — so only apply the
-    # repository-name filter in shared-collection mode (repo_id is None).
-    qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
+    # ── Check Retrieval Cache ───────────────────────────────────────────
+    cached_fused = retrieval_cache.get(query, repo_id=repo_id, filters=metadata_filter)
+    if cached_fused is not None:
+        fused = cached_fused[:top_k]
+    else:
+        # ── Dense vector search (Qdrant) ────────────────────────────────────
+        vector = embedder.encode(query).tolist()
+        query_limit = HYBRID_TOP_K if _get_bm25(repo_id) is not None else top_k
+        # Repo-isolated collections already scope results to one repository, and
+        # legacy payloads have no ``repository`` tag — so only apply the
+        # repository-name filter in shared-collection mode (repo_id is None).
+        qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
 
-    qdrant_result = client.query_points(
-        collection_name=target_collection,
-        query=vector,
-        query_filter=qdrant_filter,
-        limit=query_limit,
-        score_threshold=QDRANT_SIMILARITY_THRESHOLD,
-    )
+        qdrant_result = client.query_points(
+            collection_name=target_collection,
+            query=vector,
+            query_filter=qdrant_filter,
+            limit=query_limit,
+            score_threshold=QDRANT_SIMILARITY_THRESHOLD,
+        )
 
-    # qdrant_result may be an object with a .points attribute (Qdrant client) or
-    # a simple iterable. Normalize to an iterable of points for testability.
-    points_iterable = getattr(qdrant_result, "points", qdrant_result)
+        # qdrant_result may be an object with a .points attribute (Qdrant client) or
+        # a simple iterable. Normalize to an iterable of points for testability.
+        points_iterable = getattr(qdrant_result, "points", qdrant_result)
 
-    # Expose the last query vector into builtins so older tests that reference
-    # the name `vector` directly (unqualified) can still assert against it.
-    try:
-        import builtins as _builtins
-        _builtins.vector = vector
-    except Exception:
-        pass
+        # Expose the last query vector into builtins so older tests that reference
+        # the name `vector` directly (unqualified) can still assert against it.
+        try:
+            import builtins as _builtins
+            _builtins.vector = vector
+        except Exception:
+            pass
 
-    vector_chunks = []
-    for idx, point in enumerate(points_iterable):
-        payload = point.payload or {}
-        repo_name = payload.get("repository", "")
-        vector_chunks.append({
-            "_idx": f"v_{idx}",
-            "text": payload.get("text", ""),
-            "file": payload.get("file", "unknown"),
-            "repository": repo_name,
-            "start_line": payload.get("start_line", "?"),
-            "end_line": payload.get("end_line"),
-            "symbol_name": payload.get("symbol_name"),
-            "symbol_type": payload.get("symbol_type"),
-            "parent_class": payload.get("parent_class"),
-            "docstring": payload.get("docstring"),
-            "is_symbol": payload.get("is_symbol", False),
-            "score": getattr(point, "score", None)
-        })
+        vector_chunks = []
+        for idx, point in enumerate(points_iterable):
+            payload = point.payload or {}
+            repo_name = payload.get("repository", "")
+            vector_chunks.append({
+                "_idx": f"v_{idx}",
+                "text": payload.get("text", ""),
+                "file": payload.get("file", "unknown"),
+                "repository": repo_name,
+                "start_line": payload.get("start_line", "?"),
+                "end_line": payload.get("end_line"),
+                "symbol_name": payload.get("symbol_name"),
+                "symbol_type": payload.get("symbol_type"),
+                "parent_class": payload.get("parent_class"),
+                "docstring": payload.get("docstring"),
+                "is_symbol": payload.get("is_symbol", False),
+                "score": getattr(point, "score", None)
+            })
 
-    # ── Sparse keyword search (BM25) ────────────────────────────────────
-    keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
+        # ── Sparse keyword search (BM25) ────────────────────────────────────
+        keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
 
-    # ── Exact symbol matching ──────────────────────────────────────────────
-    symbols = _extract_symbols(query)
-    symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
+        # ── Exact symbol matching ──────────────────────────────────────────────
+        symbols = _extract_symbols(query)
+        symbol_chunks = _exact_symbol_search(symbols, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
 
-    # ── Fuse results ──────────────────────────────────────────────────────
-    fused = _fuse_ranked_lists(vector_chunks, keyword_chunks, symbol_chunks, top_k)
+        # ── Fuse results ──────────────────────────────────────────────────────
+        fused = _fuse_ranked_lists(vector_chunks, keyword_chunks, symbol_chunks, top_k)
+        retrieval_cache.put(query, fused, repo_id=repo_id, filters=metadata_filter)
 
     # ── Format context for LLM ──────────────────────────────────────────
     structured_context = []
@@ -948,3 +956,14 @@ Location: {location}
         result = formatted_context
     hook_registry.execute_post_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id}, result)
     return result
+
+
+def invalidate_retrieval_cache(repo_id: str | None = None) -> int:
+    """Invalidate cached retrieval results for a repository or globally."""
+    return retrieval_cache.invalidate_repo(repo_id)
+
+
+def invalidate_retrieval_file_cache(file_path: str, repo_id: str | None = None) -> int:
+    """Invalidate cached retrieval results referencing a specific file."""
+    return retrieval_cache.invalidate_file(file_path, repo_id)
+
