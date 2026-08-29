@@ -6,7 +6,21 @@ Separates prompt construction into clear, decoupled stages:
   2. Prompt assembly: combining system prompts, user queries, code context, and history into structured message payloads.
 """
 
+import re
 from typing import List, Dict, Any
+
+from config import MAX_PROMPT_CONTEXT_CHARS, MAX_PROMPT_HISTORY_CHARS
+from logger import logger
+
+# retrieve() formats each fused chunk as a block beginning "Result <n>:".
+# Truncation cuts between those blocks rather than inside one — see
+# prepare_context() for why that matters.
+_RESULT_BOUNDARY_RE = re.compile(r"(?m)^Result \d+:$")
+
+# Wording kept verbatim from the original implementation: it is the marker
+# the model and the existing tests both key off.
+TRUNCATION_NOTICE = "\n...[context truncated]"
+HISTORY_TRUNCATION_NOTICE = "...[earlier turns omitted]\n"
 
 # Strict system prompt constraining LLM answers to provided codebase context
 SYSTEM_PROMPT = """
@@ -53,24 +67,144 @@ INSTRUCTIONS:
 def prepare_context(context: str, max_length: int | None = None) -> str:
     """
     Stage 1: Context Preparation.
-    Clean, format, and optionally truncate retrieved code context before embedding in prompts.
+
+    Clean, format, and truncate retrieved code context before embedding it in
+    a prompt.
+
+    ``max_length`` used to default to None and *both* callers omitted it, so
+    the branch below was dead and the context went to the provider at whatever
+    size retrieval produced. Nothing upstream bounded it: a chunk is
+    ``INDEX_CHUNK_SIZE`` lines and a line has no length limit, so a single
+    minified or generated file could overrun any context window. The provider
+    rejected the request, ``generate_response_stream()`` caught the error, and
+    the user got a generic apology that said nothing about prompt size
+    (issue #295).
+
+    It now defaults to :data:`MAX_PROMPT_CONTEXT_CHARS`. Pass ``0`` to disable
+    truncation explicitly — ``None`` means "use the configured budget", which
+    is the safe default rather than the unlimited one.
+
+    Args:
+        context: The formatted context string from ``retriever.retrieve()``.
+        max_length: Character budget. None uses the configured default;
+            0 disables truncation.
+
+    Returns:
+        The cleaned, possibly truncated context.
     """
     if not context:
         return ""
 
     cleaned_context = context.strip()
-    if max_length and len(cleaned_context) > max_length:
-        cleaned_context = cleaned_context[:max_length] + "\n...[context truncated]"
 
-    return cleaned_context
+    if max_length is None:
+        max_length = MAX_PROMPT_CONTEXT_CHARS
+    if not max_length or len(cleaned_context) <= max_length:
+        return cleaned_context
+
+    truncated = _truncate_at_result_boundary(cleaned_context, max_length)
+    logger.warning(
+        "Prompt context truncated from %d to %d characters (budget %d). "
+        "Consider lowering RETRIEVAL_TOP_K or INDEX_CHUNK_SIZE for this "
+        "repository.",
+        len(cleaned_context),
+        len(truncated),
+        max_length,
+    )
+    return truncated + TRUNCATION_NOTICE
+
+
+def _truncate_at_result_boundary(context: str, max_length: int) -> str:
+    """
+    Trim *context* to *max_length* characters, cutting between result blocks.
+
+    ``context[:max_length]`` lands mid-token: the model is handed half an
+    identifier, an unterminated string, and a dangling ``Code:`` header with
+    nothing under it. That is precisely the input that makes it start filling
+    in the gaps — directly against the "DO NOT guess" rule in
+    :data:`SYSTEM_PROMPT`. Dropping whole results instead means everything the
+    model does see is complete and true.
+
+    Args:
+        context: Cleaned context, expected to be ``Result n:`` blocks.
+        max_length: Character budget for the returned string.
+
+    Returns:
+        The largest prefix of whole result blocks that fits. If even the first
+        block is too large — one enormous chunk — falls back to a hard cut at
+        a line boundary, since returning nothing would be worse.
+    """
+    boundaries = [match.start() for match in _RESULT_BOUNDARY_RE.finditer(context)]
+
+    # Keep the last boundary that still leaves us inside the budget.
+    kept = 0
+    for start in boundaries:
+        if start == 0:
+            continue
+        if start > max_length:
+            break
+        kept = start
+
+    if kept:
+        return context[:kept].rstrip()
+
+    # A single result exceeds the whole budget. Cut at the last newline so at
+    # least the final line the model sees is a complete one.
+    hard_cut = context[:max_length]
+    newline = hard_cut.rfind("\n")
+    if newline > max_length // 2:
+        hard_cut = hard_cut[:newline]
+    return hard_cut.rstrip()
+
+
+def prepare_history(history: str, max_length: int | None = None) -> str:
+    """
+    Trim conversation history to its own budget, keeping the most recent turns.
+
+    History is budgeted separately from code context and given far less room.
+    It holds up to ``max_history_per_session`` complete previous answers, so
+    under a shared budget one long earlier answer could crowd out the code the
+    current question is about — and history is the less valuable of the two.
+
+    Trimming keeps the *end* of the history, because the most recent exchange
+    is the one the current question most likely refers back to.
+
+    Args:
+        history: The formatted history string from ``SessionManager.get()``.
+        max_length: Character budget. None uses
+            :data:`MAX_PROMPT_HISTORY_CHARS`; 0 drops history entirely.
+
+    Returns:
+        The trimmed history.
+    """
+    if not history:
+        return ""
+
+    if max_length is None:
+        max_length = MAX_PROMPT_HISTORY_CHARS
+    if max_length == 0:
+        return ""
+    if len(history) <= max_length:
+        return history
+
+    tail = history[-max_length:]
+    # Start at an exchange boundary so the prompt never opens mid-sentence.
+    boundary = tail.find("User: ")
+    if boundary > 0:
+        tail = tail[boundary:]
+    return HISTORY_TRUNCATION_NOTICE + tail
 
 
 def prepare_user_content(user_query: str, context: str, history: str = "") -> str:
     """
     Stage 2: User Content Formatting.
     Formats the user question, retrieved code context, and conversation history.
+
+    Both parts are trimmed to their configured budgets here, which is the one
+    place every prompt passes through.
     """
     prepared_ctx = prepare_context(context)
+    prepared_history = prepare_history(history)
     return f"""
 User question:
 {user_query}
@@ -79,7 +213,7 @@ Code context:
 {prepared_ctx}
 
 Conversation history:
-{history}
+{prepared_history}
 
 {USER_INSTRUCTIONS}
 """
@@ -106,13 +240,32 @@ def build_messages(user_query: str, context: str, history: str = "") -> List[Dic
 def generate_prompt_preview(user_query: str, context: str, history: str = "") -> Dict[str, Any]:
     """
     Generate prompt preview displaying retrieved context, system prompt, and final assembled messages.
+
+    The preview reports truncation explicitly. Without that it would show a
+    prompt that differs from the one actually sent, which defeats the point of
+    a preview endpoint.
     """
     prepared_ctx = prepare_context(context)
+    prepared_history = prepare_history(history)
     messages = build_messages(user_query, context, history)
+
+    original_context_chars = len((context or "").strip())
+    original_history_chars = len(history or "")
+
     return {
         "user_query": user_query,
         "retrieved_context": prepared_ctx,
-        "conversation_history": history,
+        "conversation_history": prepared_history,
         "system_prompt": SYSTEM_PROMPT.strip(),
         "final_prompt_messages": messages,
+        "budget": {
+            "max_context_chars": MAX_PROMPT_CONTEXT_CHARS,
+            "max_history_chars": MAX_PROMPT_HISTORY_CHARS,
+            "context_chars": len(prepared_ctx),
+            "original_context_chars": original_context_chars,
+            "context_truncated": len(prepared_ctx) != original_context_chars,
+            "history_chars": len(prepared_history),
+            "original_history_chars": original_history_chars,
+            "history_truncated": len(prepared_history) != original_history_chars,
+        },
     }
