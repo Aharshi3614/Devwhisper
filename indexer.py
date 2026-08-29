@@ -202,6 +202,55 @@ def collect_indexable_files(
 
 
 # ---------------------------------------------------------------------------
+# Chunk paths
+# ---------------------------------------------------------------------------
+def chunk_relative_path(filepath: str, rel_root: str | None = None) -> str:
+    """
+    Return the path recorded on a chunk, for use as its identity.
+
+    ``chunk_point_id()`` needs a path that is unique across the repository and
+    unchanged when the repository moves. Neither of the two things previously
+    available satisfies both:
+
+      * the basename collides — ``a/utils.py`` and ``b/utils.py`` are different
+        files with the same ``file`` field, so they hash to one id and
+        ``upsert()`` keeps only one of them;
+      * the absolute path is unique but moves with the checkout, so a re-clone
+        or a bind-mount at a different prefix re-keys every point in the
+        collection and orphans the previous run's copy.
+
+    A repository-relative path is unique *and* stable, which is what the id
+    scheme has always documented that it wanted.
+
+    Separators are normalised to ``/`` so that a repository indexed on Windows
+    and the same repository indexed on Linux produce the same ids.
+
+    Args:
+        filepath: Path to the source file, as walked by the indexer.
+        rel_root: Repository root to make *filepath* relative to. When None —
+            or when *filepath* lies outside it, which ``os.path.relpath`` would
+            otherwise express with ``..`` segments — the basename is used, so
+            standalone callers keep the previous behaviour.
+
+    Returns:
+        A repository-relative, forward-slash separated path.
+    """
+    if not filepath:
+        return ""
+
+    if rel_root:
+        try:
+            relative = os.path.relpath(filepath, rel_root)
+        except ValueError:
+            # Different drives on Windows; there is no relative form.
+            relative = ""
+        if relative and not relative.startswith(".."):
+            return relative.replace(os.sep, "/")
+
+    return os.path.basename(filepath)
+
+
+# ---------------------------------------------------------------------------
 # Deterministic Qdrant point ids
 # ---------------------------------------------------------------------------
 # Namespace for chunk ids. A dedicated namespace rather than NAMESPACE_OID so
@@ -241,10 +290,19 @@ def chunk_point_id(chunk: dict, path: str, repository: str | None = None) -> str
     being able to award its cross-list boost to precisely the chunks that
     earned it.
 
+    Chunks used to carry no path at all, only a basename, so the caller in
+    ``generate_embeddings()`` was reduced to keying on that and collided
+    across directories, while ``index_directory()`` keyed on the absolute
+    path and re-keyed the whole collection whenever the repository moved
+    (issue #307). Both now key on ``chunk["path"]``.
+
     Args:
         chunk: The chunk payload, as produced by ``get_file_chunks()``.
-        path: Path to the source file. The full path, not the basename —
-            two ``utils.py`` in different packages are different files.
+        path: Repository-relative path to the source file, as recorded on
+            the chunk by :func:`chunk_relative_path`. Not the basename — two
+            ``utils.py`` in different packages are different files — and not
+            an absolute path either, which would satisfy (2) while breaking
+            (1) the moment the repository is checked out elsewhere.
         repository: Repository name. Included so that shared-collection mode,
             where several repositories write into ``QDRANT_COLLECTION_NAME``,
             cannot collide on a relative path the repositories have in common.
@@ -288,7 +346,11 @@ def create_collection(collection_name: str) -> None:
     )
 
 
-def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
+def chunk_file(
+    filepath: str,
+    chunk_size: int = INDEX_CHUNK_SIZE,
+    rel_root: str | None = None,
+) -> list[dict]:
     """
     Split a source file into overlapping line-based chunks.
 
@@ -298,9 +360,11 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
     Args:
         filepath: Path to the source file.
         chunk_size: Number of lines per chunk.
+        rel_root: Repository root, used to record a stable relative ``path``
+            on every chunk. See :func:`chunk_relative_path`.
 
     Returns:
-        List of chunk dicts with keys: text, file, start_line, is_symbol.
+        List of chunk dicts with keys: text, file, path, start_line, is_symbol.
 
     Raises:
         ValueError: If chunk_size is not greater than INDEX_CHUNK_OVERLAP.
@@ -312,6 +376,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
         lines = file_handle.readlines()
 
     chunks = []
+    relative_path = chunk_relative_path(filepath, rel_root)
     step = chunk_size - INDEX_CHUNK_OVERLAP
     for index in range(0, len(lines), step):
         chunk = "".join(lines[index:index + chunk_size])
@@ -320,6 +385,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
                 {
                     "text": chunk,
                     "file": os.path.basename(filepath),
+                    "path": relative_path,
                     "start_line": index + 1,
                     "is_symbol": False,
                 }
@@ -407,7 +473,11 @@ def _module_level_ranges(
     return ranges
 
 
-def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
+def get_file_chunks(
+    filepath: str,
+    chunk_size: int = INDEX_CHUNK_SIZE,
+    rel_root: str | None = None,
+) -> list[dict]:
     """Return semantically bounded indexing chunks for *filepath*.
 
     Python, JavaScript, and TypeScript files use symbols as primary boundaries.
@@ -416,10 +486,14 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     metadata on every part.
 
     Other file types retain the existing overlapping line-based strategy.
+
+    Every chunk carries a repository-relative ``path`` (see
+    :func:`chunk_relative_path`) in addition to the ``file`` basename, because
+    the basename alone is not a chunk identity — see :func:`chunk_point_id`.
     """
     ext = os.path.splitext(filepath)[1].lower()
     if ext not in (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs"):
-        return chunk_file(filepath, chunk_size=chunk_size)
+        return chunk_file(filepath, chunk_size=chunk_size, rel_root=rel_root)
 
     if chunk_size <= INDEX_CHUNK_OVERLAP:
         raise ValueError("chunk_size must be greater than INDEX_CHUNK_OVERLAP")
@@ -433,14 +507,16 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     symbols = extract_symbols_from_file(filepath)
     if not symbols:
         # Files without extracted symbols fall back to regular line chunks.
-        return chunk_file(filepath, chunk_size=chunk_size)
+        return chunk_file(filepath, chunk_size=chunk_size, rel_root=rel_root)
 
     chunks = []
     filename = os.path.basename(filepath)
+    relative_path = chunk_relative_path(filepath, rel_root)
 
     for sym in symbols:
         metadata = {
             "file": filename,
+            "path": relative_path,
             "symbol_name": sym.name,
             "symbol_type": sym.symbol_type,
             "parent_class": sym.parent_class,
@@ -480,6 +556,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
                 chunk_size,
                 {
                     "file": filename,
+                    "path": relative_path,
                     "is_symbol": False,
                     "chunk_type": "module_context",
                 },
@@ -546,9 +623,16 @@ def discover_files(
     return collect_indexable_files(directory, gitignore_rules=gitignore_rules)
 
 
-def generate_chunks(files: list[str]) -> tuple[list[dict], dict[str, dict], dict[str, list[str]]]:
+def generate_chunks(
+    files: list[str],
+    rel_root: str | None = None,
+) -> tuple[list[dict], dict[str, dict], dict[str, list[str]]]:
     """Stage 2: Chunk Generation.
     Processes indexable files to generate chunk payloads, cache entries, and import maps.
+
+    *rel_root* is the repository root the chunk ``path`` fields are recorded
+    relative to. Passing it is what makes the resulting point ids both unique
+    across directories and stable across checkouts.
     """
     all_chunks = []
     file_cache_map = {}
@@ -563,7 +647,7 @@ def generate_chunks(files: list[str]) -> tuple[list[dict], dict[str, dict], dict
             "hash": get_file_hash(path),
         }
 
-        chunks = get_file_chunks(path)
+        chunks = get_file_chunks(path, rel_root=rel_root)
         file_symbols = []
         for chunk in chunks:
             if chunk.get("is_symbol"):
@@ -586,9 +670,10 @@ def generate_embeddings(chunks: list[dict], repo_name: str) -> list[PointStruct]
     for chunk in chunks:
         chunk["repository"] = repo_name
         vector = embedder.encode(chunk["text"]).tolist()
-        # ``chunk['file']`` is the basename, so this used to collide across
-        # directories as well as within a file. ``chunk_point_id()`` takes the
-        # best path available on the payload and mixes in the symbol identity.
+        # ``chunk['path']`` is repository-relative, so it distinguishes
+        # ``a/utils.py`` from ``b/utils.py`` and does not change when the
+        # repository is checked out somewhere else. The ``file`` fallback is
+        # only reached for payloads built before this field existed.
         stable_id = chunk_point_id(
             chunk,
             chunk.get("path") or chunk.get("file", ""),
@@ -784,7 +869,7 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
                         upsert_pending(idx)
                     continue
 
-            chunks = get_file_chunks(path)
+            chunks = get_file_chunks(path, rel_root=directory)
             file_symbols = []
             for chunk in chunks:
                 if chunk.get("is_symbol"):
@@ -805,7 +890,13 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
                 for chunk in chunks:
                     chunk["repository"] = repo_name
                     vector = embedder.encode(chunk["text"]).tolist()
-                    stable_id = chunk_point_id(chunk, path, repo_name)
+                    # Keyed on the repository-relative path, not on ``path``
+                    # (absolute, and therefore different on every machine).
+                    stable_id = chunk_point_id(
+                        chunk,
+                        chunk.get("path") or chunk_relative_path(path, directory),
+                        repo_name,
+                    )
                     points.append(
                         PointStruct(
                             id=stable_id,
@@ -825,7 +916,7 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
         if dry_run:
             # Aggregate chunk stats across files
             for p in all_files:
-                file_chunks = get_file_chunks(p)
+                file_chunks = get_file_chunks(p, rel_root=directory)
                 total_chunks += len(file_chunks)
 
             dry_run_summary = {

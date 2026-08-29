@@ -36,10 +36,11 @@ def _configure_indexer(monkeypatch, tmp_path, file_paths):
     monkeypatch.setattr(
         indexer,
         "get_file_chunks",
-        lambda path: [
+        lambda path, **_kwargs: [
             {
                 "text": f"code from {path}",
                 "file": path,
+                "path": path,
                 "start_line": 1,
                 "is_symbol": False,
             }
