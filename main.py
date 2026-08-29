@@ -48,7 +48,11 @@ from pipeline_validator import PipelineTracker, PipelineStageError
 from indexer import index_directory, progress_state, get_before_cache_data, collect_indexable_files, \
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
-from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
+from config import (
+    SAMPLE_CODEBASE_DIRECTORY,
+    QDRANT_COLLECTION_NAME,
+    SUPPORTED_EXTENSIONS,
+)
 import repositories
 import contextvars
 import logging
@@ -954,18 +958,30 @@ async def upload_codebase(file: UploadFile = File(...)):
             os.remove(temp_zip_path)
         return error_response(400, f"Path traversal detected in ZIP: {invalid_member}")
 
-    # Validate that ZIP contains supported files (.py, .md) synchronously
+    # Validate that the ZIP contains at least one indexable file.
+    #
+    # Derived from SUPPORTED_EXTENSIONS rather than restating the list. The
+    # two were equal only by coincidence, and drifting them apart gives the
+    # worst outcome available: the archive is rejected here for containing no
+    # supported files while the indexer behind it would have indexed them
+    # (issue #309).
+    supported = tuple(sorted(SUPPORTED_EXTENSIONS))
     has_supported_file = False
     with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
         for member in zip_ref.namelist():
-            if not member.endswith("/") and member.lower().endswith((".py", ".md")):
+            if not member.endswith("/") and member.lower().endswith(supported):
                 has_supported_file = True
                 break
 
     if not has_supported_file:
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
-        return error_response(400, "No supported files (.py, .md) found in the uploaded ZIP archive.")
+        return error_response(
+            400,
+            "No supported files ("
+            + ", ".join(supported)
+            + ") found in the uploaded ZIP archive.",
+        )
 
     # Queue the job
     job = {

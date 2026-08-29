@@ -312,6 +312,45 @@ def _env_str(name: str, default: str, *, allowed: frozenset[str] | None = None) 
     return value
 
 
+def _env_extensions(name: str, default: frozenset[str]) -> frozenset[str]:
+    """
+    Read a comma-separated set of file extensions from the environment.
+
+    Accepts entries with or without the leading dot and in any case, so
+    ``SUPPORTED_EXTENSIONS="py, JS, .ts"`` and ``".py,.js,.ts"`` are the same
+    set. Blank entries are ignored, which makes a trailing comma harmless.
+
+    Args:
+        name:    Environment variable name.
+        default: Set to use when the variable is unset or empty.
+
+    Returns:
+        Normalised, lower-cased extensions, each with a leading dot.
+
+    Raises:
+        ConfigError: If the variable is set but contains no usable entry.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+
+    extensions = set()
+    for entry in raw.split(","):
+        entry = entry.strip().lower()
+        if not entry:
+            continue
+        extensions.add(entry if entry.startswith(".") else f".{entry}")
+
+    if not extensions:
+        raise ConfigError(
+            setting=name,
+            value=raw,
+            expected="a comma-separated list of file extensions, e.g. '.py,.md,.ts'",
+            fix=_format_fix_env(name, ".py,.md"),
+        )
+    return frozenset(extensions)
+
+
 # ---------------------------------------------------------------------------
 # Backward-compatible aliases (existing callers use the old names)
 # ---------------------------------------------------------------------------
@@ -410,8 +449,49 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
         ),
     )
 
-SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md"})
-"""File extensions eligible for indexing."""
+#: Extensions whose files are chunked on symbol boundaries by
+#: ``indexer.get_file_chunks()``, using the extractors in ``symbol_parser``.
+#: This is the set the extractor actually implements — it is not a
+#: preference, so it is not configurable.
+SYMBOL_EXTENSIONS: Final = frozenset(
+    {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs"}
+)
+"""File extensions for which symbol-level chunking is available."""
+
+#: Extension -> language name, recorded on each chunk so the index summary can
+#: report the mix and retrieval can filter on it.
+EXTENSION_LANGUAGES: Final = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".md": "markdown",
+}
+"""Human-readable language name for each known extension."""
+
+DEFAULT_SUPPORTED_EXTENSIONS: Final = frozenset(
+    {".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".mjs"}
+)
+"""Extensions indexed unless SUPPORTED_EXTENSIONS overrides them.
+
+This used to be ``{".py", ".md"}``, which silently gated off the JavaScript
+and TypeScript extraction merged in #288: ``collect_indexable_files()``
+filters on this set *before* ``get_file_chunks()`` is reached, so those files
+were recorded as ``unsupported_extension`` and the extractor for them could
+never run (issue #309).
+"""
+
+SUPPORTED_EXTENSIONS: Final = _env_extensions(
+    "SUPPORTED_EXTENSIONS", DEFAULT_SUPPORTED_EXTENSIONS
+)
+"""File extensions eligible for indexing.
+
+Override with a comma-separated list to narrow or widen the set without a code
+change, e.g. ``SUPPORTED_EXTENSIONS=.py,.md`` to restore the previous
+behaviour.
+"""
 
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
@@ -623,6 +703,9 @@ __all__ = [
     "INDEX_CHUNK_SIZE",
     "INDEX_CHUNK_OVERLAP",
     "SUPPORTED_EXTENSIONS",
+    "DEFAULT_SUPPORTED_EXTENSIONS",
+    "SYMBOL_EXTENSIONS",
+    "EXTENSION_LANGUAGES",
     "SAMPLE_CODEBASE_DIRECTORY",
     "MAX_FILE_SIZE_MB",
     "MAX_FILE_SIZE_BYTES",
