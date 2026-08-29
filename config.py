@@ -562,6 +562,9 @@ validate_config()
 
 PROMPT_PREVIEW_MODE: bool = os.getenv("PROMPT_PREVIEW_MODE", "false").lower() in ("true", "1", "yes")
 
+MAX_PROMPT_CONTEXT_TOKENS: Final = _env_int("MAX_PROMPT_CONTEXT_TOKENS", 4096, min_value=128)
+ENABLE_CONTEXT_COMPRESSION: Final = os.getenv("ENABLE_CONTEXT_COMPRESSION", "true").lower() in ("true", "1", "yes")
+
 __all__ = [
     "ConfigError",
     "OUTPUT_DIRECTORY",
@@ -591,5 +594,8 @@ __all__ = [
     "LLM_BASE_URL",
     "LLM_MODEL",
     "PROMPT_PREVIEW_MODE",
+    "MAX_PROMPT_CONTEXT_TOKENS",
+    "ENABLE_CONTEXT_COMPRESSION",
     "validate_config",
 ]
+

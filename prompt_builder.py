@@ -7,6 +7,7 @@ Separates prompt construction into clear, decoupled stages:
 """
 
 from typing import List, Dict, Any
+from context_packer import pack_context, estimate_token_count
 
 # Strict system prompt constraining LLM answers to provided codebase context
 SYSTEM_PROMPT = """
@@ -50,13 +51,22 @@ INSTRUCTIONS:
 """
 
 
-def prepare_context(context: str, max_length: int | None = None) -> str:
+def prepare_context(
+    context: str,
+    max_length: int | None = None,
+    max_tokens: int | None = None,
+    enable_compression: bool = True,
+) -> str:
     """
-    Stage 1: Context Preparation.
-    Clean, format, and optionally truncate retrieved code context before embedding in prompts.
+    Stage 1: Context Preparation & Token Budgeting.
+    Clean, format, compress, and truncate retrieved code context within token limits.
     """
     if not context:
         return ""
+
+    if max_tokens is not None:
+        packed, _ = pack_context(context, max_tokens=max_tokens, enable_compression=enable_compression)
+        return packed
 
     cleaned_context = context.strip()
     if max_length and len(cleaned_context) > max_length:
@@ -107,12 +117,14 @@ def generate_prompt_preview(user_query: str, context: str, history: str = "") ->
     """
     Generate prompt preview displaying retrieved context, system prompt, and final assembled messages.
     """
-    prepared_ctx = prepare_context(context)
-    messages = build_messages(user_query, context, history)
+    packed_ctx, telemetry = pack_context(context, max_tokens=4096, enable_compression=True)
+    messages = build_messages(user_query, packed_ctx, history)
     return {
         "user_query": user_query,
-        "retrieved_context": prepared_ctx,
+        "retrieved_context": packed_ctx,
+        "context_telemetry": telemetry,
         "conversation_history": history,
         "system_prompt": SYSTEM_PROMPT.strip(),
         "final_prompt_messages": messages,
     }
+
