@@ -1147,7 +1147,12 @@ def retrieve(
 
         confidence = result.get("score")
 
-        file = result.get("file", "unknown")
+        # Prefer the repository-relative path over the basename: two files
+        # called utils.py in different packages are different files, and a
+        # citation naming only "utils.py" does not say which one was read
+        # (issue #307). Payloads indexed before ``path`` existed still only
+        # have ``file``, so fall back to it rather than losing the source.
+        file = result.get("path") or result.get("file", "unknown")
         repo = result.get("repository", "")
         start_line = result.get("start_line", "?")
         code = result.get("text", "")
