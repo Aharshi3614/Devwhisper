@@ -347,6 +347,38 @@ RETRIEVAL_TOP_K: Final = _env_int("RETRIEVAL_TOP_K", 6, min_value=1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Prompt budget
+# ═══════════════════════════════════════════════════════════════════════════
+MAX_PROMPT_CONTEXT_CHARS: Final = _env_int(
+    "MAX_PROMPT_CONTEXT_CHARS", 48_000, min_value=1_000
+)
+"""Character ceiling for the retrieved code context in one prompt.
+
+Nothing upstream bounds this. A chunk is INDEX_CHUNK_SIZE *lines*, and a line
+has no length limit — minified JS, generated code, long data literals and
+vendored files all pass collect_indexable_files() and are chunked by line
+count. MAX_FILE_SIZE_MB bounds the file, not the chunk. So RETRIEVAL_TOP_K
+chunks could exceed any provider's context window, and the request failed with
+nothing but a generic apology to show for it.
+
+48,000 characters is roughly 12–16k tokens of source, which leaves ample room
+for the system prompt, history and the answer inside a modest window while
+being generous enough that ordinary repositories never reach it.
+"""
+
+MAX_PROMPT_HISTORY_CHARS: Final = _env_int(
+    "MAX_PROMPT_HISTORY_CHARS", 8_000, min_value=0
+)
+"""Character ceiling for conversation history in one prompt.
+
+Budgeted separately from code context, and deliberately much smaller. History
+holds up to max_history_per_session complete previous answers; sharing one
+budget let an old, long answer crowd out the code the current question is
+actually about, which is the less valuable of the two.
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Cache settings
 # ═══════════════════════════════════════════════════════════════════════════
 CACHE_SIMILARITY_THRESHOLD: Final = _env_float(
@@ -468,6 +500,20 @@ def validate_config() -> None:
     """
     errors: list[str] = []
 
+    if MAX_PROMPT_CONTEXT_CHARS < 1000:
+        errors.append(
+            f"- MAX_PROMPT_CONTEXT_CHARS must be at least 1000, got "
+            f"{MAX_PROMPT_CONTEXT_CHARS}. A budget below that cannot hold a "
+            f"single chunk. Fix: export MAX_PROMPT_CONTEXT_CHARS=48000"
+        )
+
+    if MAX_PROMPT_HISTORY_CHARS < 0:
+        errors.append(
+            f"- MAX_PROMPT_HISTORY_CHARS must be >= 0, got "
+            f"{MAX_PROMPT_HISTORY_CHARS}. Use 0 to drop history entirely. "
+            f"Fix: export MAX_PROMPT_HISTORY_CHARS=8000"
+        )
+
     if RETRIEVAL_TOP_K < 1:
         errors.append(
             f"- RETRIEVAL_TOP_K must be at least 1, got {RETRIEVAL_TOP_K}. "
@@ -574,6 +620,8 @@ __all__ = [
     "QDRANT_COLLECTION_NAME",
     "QDRANT_SIMILARITY_THRESHOLD",
     "RETRIEVAL_TOP_K",
+    "MAX_PROMPT_CONTEXT_CHARS",
+    "MAX_PROMPT_HISTORY_CHARS",
     "CACHE_SIMILARITY_THRESHOLD",
     "INDEX_CHUNK_SIZE",
     "INDEX_CHUNK_OVERLAP",

@@ -101,6 +101,21 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
+
+class RequestPreprocessingMiddleware(BaseHTTPMiddleware):
+    """Middleware for request logging and centralized error handling (Issue #190)."""
+
+    async def dispatch(self, request: Request, call_next):
+        timestamp = datetime.now(timezone.utc).isoformat()
+        logger.info(f"Incoming request: {request.method} {request.url.path} at {timestamp}")
+        try:
+            return await call_next(request)
+        except Exception:
+            logger.error("SERVER ERROR", exc_info=True)
+            from errors import error_response
+            return error_response(500, "An unexpected server error occurred. Please try again.")
+
+app.add_middleware(RequestPreprocessingMiddleware)
 app.add_middleware(RequestIDMiddleware)
 
 
@@ -532,79 +547,75 @@ async def vapi_webhook(request: Request):
         StreamingResponse with the answer(s), or JSONResponse with the
         assistant config, an acknowledgement, or an error.
     """
-    try:
-        body = await request.json()
-        logger.info("Incoming webhook payload: %s", body)
+    body = await request.json()
+    logger.info("Incoming webhook payload: %s", body)
 
-        message = body.get("message", {})
-        msg_type = message.get("type", "")
-        session_id = _get_session_id(message)
+    message = body.get("message", {})
+    msg_type = message.get("type", "")
+    session_id = _get_session_id(message)
 
-        # ── Assistant initialization ──────────────────────────────────────
-        if msg_type == "assistant-request":
-            return JSONResponse({
-                "assistant": {
-                    "firstMessage": "Hey, DevWhisper here. What are you building or debugging?",
-                    "model": {
-                        "provider": "openai",
-                        "model": "gpt-4o",
-                        "functions": [{
-                            "name": "query_codebase",
-                            "description": "Search and explain code or debug errors",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "query": {"type": "string"}
-                                },
-                                "required": ["query"]
-                            }
-                        }]
-                    },
-                    "voice": {"provider": "11labs", "voiceId": "burt"}
-                }
-            })
+    # ── Assistant initialization ──────────────────────────────────────
+    if msg_type == "assistant-request":
+        return JSONResponse({
+            "assistant": {
+                "firstMessage": "Hey, DevWhisper here. What are you building or debugging?",
+                "model": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "functions": [{
+                        "name": "query_codebase",
+                        "description": "Search and explain code or debug errors",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"}
+                            },
+                            "required": ["query"]
+                        }
+                    }]
+                },
+                "voice": {"provider": "11labs", "voiceId": "burt"}
+            }
+        })
 
-        # ── Function / tool call handling ─────────────────────────────────
-        if msg_type in ["function-call", "tool-calls"]:
-            try:
-                queries = _extract_tool_queries(message)
-            except ValueError as e:
-                logger.error("Rejected webhook tool call: %s", e)
-                return error_response(400, str(e))
+    # ── Function / tool call handling ─────────────────────────────────
+    if msg_type in ["function-call", "tool-calls"]:
+        try:
+            queries = _extract_tool_queries(message)
+        except ValueError as e:
+            logger.error("Rejected webhook tool call: %s", e)
+            return error_response(400, str(e))
 
-            if not queries:
-                # A function/tool payload we have no handler for. Nothing to
-                # answer, but nothing went wrong either.
-                return JSONResponse({"status": "ok", "results": []})
+        if not queries:
+            # A function/tool payload we have no handler for. Nothing to
+            # answer, but nothing went wrong either.
+            return JSONResponse({"status": "ok", "results": []})
 
-            if len(queries) == 1:
-                return StreamingResponse(
-                    _answer_query(queries[0], session_id),
-                    media_type="text/plain",
-                )
+        if len(queries) == 1:
+            return StreamingResponse(
+                _answer_query(queries[0], session_id),
+                media_type="text/plain",
+            )
 
-            # More than one query_codebase call in a single payload: answer
-            # every one of them in order instead of silently dropping all but
-            # the last. Each answer is labelled so the caller can tell them
-            # apart in the stream.
-            def multi_generator():
-                for position, query in enumerate(queries, start=1):
-                    if position > 1:
-                        yield "\n\n"
-                    yield f"**[{position}/{len(queries)}] {query}**\n\n"
-                    yield from _answer_query(query, session_id)
+        # More than one query_codebase call in a single payload: answer
+        # every one of them in order instead of silently dropping all but
+        # the last. Each answer is labelled so the caller can tell them
+        # apart in the stream.
+        def multi_generator():
+            for position, query in enumerate(queries, start=1):
+                if position > 1:
+                    yield "\n\n"
+                yield f"**[{position}/{len(queries)}] {query}**\n\n"
+                yield from _answer_query(query, session_id)
 
-            return StreamingResponse(multi_generator(), media_type="text/plain")
+        return StreamingResponse(multi_generator(), media_type="text/plain")
 
-        # ── Lifecycle events we do not act on ─────────────────────────────
-        # status-update, end-of-call-report, conversation-update, speech-update…
-        # Acknowledging these keeps routine Vapi callbacks out of the error log.
-        logger.info("Ignoring unhandled webhook message type: %r", msg_type)
-        return JSONResponse({"status": "ignored", "type": msg_type})
+    # ── Lifecycle events we do not act on ─────────────────────────────
+    # status-update, end-of-call-report, conversation-update, speech-update…
+    # Acknowledging these keeps routine Vapi callbacks out of the error log.
+    logger.info("Ignoring unhandled webhook message type: %r", msg_type)
+    return JSONResponse({"status": "ignored", "type": msg_type})
 
-    except Exception:
-        logger.error("SERVER ERROR", exc_info=True)
-        return error_response(500, "An unexpected server error occurred. Please try again.")
 
 
 @app.get("/health")
@@ -758,50 +769,46 @@ async def stream_query(request: Request):
     Returns:
         StreamingResponse (text/plain) with the generated answer.
     """
-    try:
-        body = await request.json()
-        query = body.get("query", "")
-        session_id = body.get("sessionId", "default")
+    body = await request.json()
+    query = body.get("query", "")
+    session_id = body.get("sessionId", "default")
 
-        if not query:
-            return error_response(400, "Query parameter is required and cannot be empty.")
+    if not query:
+        return error_response(400, "Query parameter is required and cannot be empty.")
 
-        # Cache lookup
-        cached = cache_get(query)
-        if cached is not None:
-            update_memory(session_id, query, cached)
+    # Cache lookup
+    cached = cache_get(query)
+    if cached is not None:
+        update_memory(session_id, query, cached)
 
-            async def cached_generator():
-                yield cached
+        async def cached_generator():
+            yield cached
 
-            return StreamingResponse(cached_generator(), media_type="text/plain")
+        return StreamingResponse(cached_generator(), media_type="text/plain")
 
-        # Cache miss: run retrieval
-        context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
-        history = get_memory(session_id)
+    # Cache miss: run retrieval
+    context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
+    history = get_memory(session_id)
 
-        def event_generator():
-            full_response = []
-            for token in generate_response_stream(query, context, history):
-                full_response.append(token)
-                yield token
+    def event_generator():
+        full_response = []
+        for token in generate_response_stream(query, context, history):
+            full_response.append(token)
+            yield token
 
-            if sources:
-                sources_str = _sources_display(sources, confidences)
-                yield sources_str
-                full_response.append(sources_str)
+        if sources:
+            sources_str = _sources_display(sources, confidences)
+            yield sources_str
+            full_response.append(sources_str)
 
-            # Update cache and session history on complete stream
-            answer = "".join(full_response)
-            if answer and answer.strip():
-                cache_put(query, answer)
-                update_memory(session_id, query, answer)
+        # Update cache and session history on complete stream
+        answer = "".join(full_response)
+        if answer and answer.strip():
+            cache_put(query, answer)
+            update_memory(session_id, query, answer)
 
-        return StreamingResponse(event_generator(), media_type="text/plain")
+    return StreamingResponse(event_generator(), media_type="text/plain")
 
-    except Exception:
-        logger.error("SERVER STREAM ERROR", exc_info=True)
-        return error_response(500, "An unexpected server error occurred in the stream. Please try again.")
 
 
 # ---------------------------------------------------------------------------
