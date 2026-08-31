@@ -48,7 +48,22 @@ from pipeline_validator import PipelineTracker, PipelineStageError
 from indexer import index_directory, progress_state, get_before_cache_data, collect_indexable_files, \
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
-from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
+from config import (
+    SAMPLE_CODEBASE_DIRECTORY,
+    QDRANT_COLLECTION_NAME,
+    MAX_UPLOAD_SIZE_BYTES,
+    MAX_EXTRACTED_SIZE_BYTES,
+    MAX_ARCHIVE_ENTRIES,
+    MAX_COMPRESSION_RATIO,
+)
+from archive_safety import (
+    ArchiveTooLarge,
+    UnsafeArchiveMember,
+    safe_extract_all,
+    stream_to_file,
+    sweep_orphan_uploads,
+    validate_archive_limits,
+)
 import repositories
 import contextvars
 import logging
@@ -259,15 +274,34 @@ def queue_worker():
                         shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
                     os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
 
-                    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-                        zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
-
-                    # Clean up temp file
-                    if os.path.exists(temp_zip_path):
-                        try:
-                            os.remove(temp_zip_path)
-                        except Exception:
-                            pass
+                    try:
+                        # extractall() decompresses every member in full. The
+                        # declared sizes were checked at upload, but a ZIP may
+                        # declare one size and deliver another, so the budget
+                        # is enforced again against the bytes actually written
+                        # (issue #310).
+                        extracted = safe_extract_all(
+                            temp_zip_path,
+                            SAMPLE_CODEBASE_DIRECTORY,
+                            max_extracted_bytes=MAX_EXTRACTED_SIZE_BYTES,
+                        )
+                        logger.info(
+                            "Extracted %.1f MB from %s",
+                            extracted / (1024 * 1024),
+                            os.path.basename(temp_zip_path),
+                        )
+                    finally:
+                        # In a finally, not after the extraction: an archive
+                        # that fails to extract is precisely the one nothing
+                        # will ever look at again, and the old placement left
+                        # it in the working directory forever.
+                        if os.path.exists(temp_zip_path):
+                            try:
+                                os.remove(temp_zip_path)
+                            except OSError:
+                                logger.warning(
+                                    "Could not remove %s", temp_zip_path
+                                )
                     directory = SAMPLE_CODEBASE_DIRECTORY
                 else:
                     # reindex: scan the registered path for this repository
@@ -318,6 +352,10 @@ def queue_worker():
 async def startup_event():
     """Warm up the embedder and check whether re-indexing is recommended."""
     threading.Thread(target=queue_worker, daemon=True).start()
+    # Archives orphaned by a restart with jobs still queued, or by an
+    # extraction that failed before this ran in a finally. Nothing else will
+    # ever look at them again, so a sweep here is what bounds them.
+    sweep_orphan_uploads()
     os.makedirs(repositories.OUTPUT_DIRECTORY, exist_ok=True)
     # sample_codebase is the default repo, but it is git-ignored and may be
     # absent on a fresh checkout — don't crash startup when it is missing.
@@ -915,6 +953,21 @@ def start_indexing(dry_run: bool = False):
     return {"status": "started", "message": "Manual re-indexing job queued.", "job_id": job_id, "dry_run": dry_run}
 
 
+def _remove_temp_upload(path: str) -> None:
+    """
+    Delete a rejected upload's temp archive.
+
+    Every early return from the upload endpoint has to do this, and the one
+    that forgot is how the working directory filled with orphans.
+    """
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not remove %s: %s", path, exc)
+
+
 @app.post("/index/upload")
 async def upload_codebase(file: UploadFile = File(...)):
     """
@@ -926,17 +979,50 @@ async def upload_codebase(file: UploadFile = File(...)):
     job_id = str(uuid.uuid4())
     temp_zip_path = f"temp_upload_{job_id}.zip"
     try:
-        with open(temp_zip_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Bounded as it arrives rather than after the fact: copyfileobj()
+        # copies until the client stops sending, so measuring afterwards
+        # means the disk is already full (issue #310). Content-Length is not
+        # trusted — the client supplies it, and a chunked request need not
+        # send one at all.
+        stream_to_file(file.file, temp_zip_path, MAX_UPLOAD_SIZE_BYTES)
+    except ArchiveTooLarge as e:
+        logger.warning("Rejected oversized upload %s: %s", file.filename, e)
+        return error_response(413, str(e))
     except Exception as e:
         logger.error("Failed to write uploaded file to disk: %s", e)
+        _remove_temp_upload(temp_zip_path)
         return error_response(500, f"Failed to save uploaded file: {e}")
 
     # Validate ZIP file structure immediately to give quick feedback
     if not zipfile.is_zipfile(temp_zip_path):
-        if os.path.exists(temp_zip_path):
-            os.remove(temp_zip_path)
+        _remove_temp_upload(temp_zip_path)
         return error_response(400, "Invalid ZIP archive.")
+
+    # Reject a bomb before extracting anything. Every value used here comes
+    # from the central directory, so nothing is decompressed to obtain it.
+    try:
+        stats = validate_archive_limits(
+            temp_zip_path,
+            max_extracted_bytes=MAX_EXTRACTED_SIZE_BYTES,
+            max_entries=MAX_ARCHIVE_ENTRIES,
+            max_ratio=MAX_COMPRESSION_RATIO,
+        )
+    except ArchiveTooLarge as e:
+        logger.warning("Rejected archive %s: %s", file.filename, e)
+        _remove_temp_upload(temp_zip_path)
+        return error_response(413, str(e))
+    except Exception as e:
+        logger.error("Could not inspect uploaded archive: %s", e)
+        _remove_temp_upload(temp_zip_path)
+        return error_response(400, "Invalid ZIP archive.")
+
+    logger.info(
+        "Accepted upload %s: %d entries, %.1f MB expanded, %.1fx ratio",
+        file.filename,
+        stats["entry_count"],
+        stats["declared_total"] / (1024 * 1024),
+        stats["ratio"],
+    )
 
     # Validate path traversal (Zip Slip) synchronously
     is_path_traversal = False
@@ -950,8 +1036,7 @@ async def upload_codebase(file: UploadFile = File(...)):
                 break
 
     if is_path_traversal:
-        if os.path.exists(temp_zip_path):
-            os.remove(temp_zip_path)
+        _remove_temp_upload(temp_zip_path)
         return error_response(400, f"Path traversal detected in ZIP: {invalid_member}")
 
     # Validate that ZIP contains supported files (.py, .md) synchronously
@@ -963,8 +1048,7 @@ async def upload_codebase(file: UploadFile = File(...)):
                 break
 
     if not has_supported_file:
-        if os.path.exists(temp_zip_path):
-            os.remove(temp_zip_path)
+        _remove_temp_upload(temp_zip_path)
         return error_response(400, "No supported files (.py, .md) found in the uploaded ZIP archive.")
 
     # Queue the job
