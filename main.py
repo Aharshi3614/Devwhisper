@@ -56,7 +56,24 @@ from indexer import index_directory, progress_state, get_before_cache_data, coll
 from session_manager import SessionManager
 from indexing_job_manager import job_manager, JobStatus
 from rate_limiter import RateLimitMiddleware
-from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
+from archive_safety import (
+    stream_to_file,
+    inspect_archive,
+    validate_archive_limits,
+    is_safe_member,
+    safe_extract_all,
+    sweep_orphan_uploads,
+    ArchiveTooLarge,
+    UnsafeArchiveMember,
+)
+from config import (
+    SAMPLE_CODEBASE_DIRECTORY,
+    QDRANT_COLLECTION_NAME,
+    MAX_UPLOAD_SIZE_BYTES,
+    MAX_EXTRACTED_SIZE_BYTES,
+    MAX_ARCHIVE_ENTRIES,
+    MAX_COMPRESSION_RATIO,
+)
 
 import repositories
 import contextvars
@@ -309,12 +326,13 @@ def queue_worker():
 
                 # Run the actual indexing pipeline
                 canc_event = job_inst._cancellation_event if job_inst else None
-                index_directory(
-                    directory,
-                    repo_id=job.get("repo_id"),
-                    dry_run=job.get("dry_run", False),
-                    cancellation_event=canc_event,
-                )
+                index_kwargs = {
+                    "repo_id": job.get("repo_id"),
+                    "dry_run": job.get("dry_run", False),
+                }
+                if canc_event is not None:
+                    index_kwargs["cancellation_event"] = canc_event
+                index_directory(directory, **index_kwargs)
 
                 if job_inst and job_inst.is_cancelled():
                     job["status"] = "cancelled"

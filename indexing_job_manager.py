@@ -41,7 +41,9 @@ class IndexingJob:
     error: Optional[str] = None
     indexed_files: int = 0
     total_files: int = 0
-    _cancellation_event: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    def __post_init__(self) -> None:
+        self._cancellation_event: threading.Event = threading.Event()
 
     def cancel(self) -> bool:
         """Signal the job to cancel if still active."""
