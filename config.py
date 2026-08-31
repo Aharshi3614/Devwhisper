@@ -650,6 +650,8 @@ PROMPT_PREVIEW_MODE: bool = os.getenv("PROMPT_PREVIEW_MODE", "false").lower() in
 MAX_PROMPT_CONTEXT_TOKENS: Final = _env_int("MAX_PROMPT_CONTEXT_TOKENS", 4096, min_value=128)
 ENABLE_CONTEXT_COMPRESSION: Final = os.getenv("ENABLE_CONTEXT_COMPRESSION", "true").lower() in ("true", "1", "yes")
 
+RETRIEVAL_CACHE_ENABLED: bool = os.getenv("RETRIEVAL_CACHE_ENABLED", "false" if _in_testing else "true").lower() in ("true", "1", "yes")
+
 __all__ = [
     "ConfigError",
     "OUTPUT_DIRECTORY",

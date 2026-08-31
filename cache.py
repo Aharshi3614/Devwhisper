@@ -279,3 +279,22 @@ def size() -> int:
     """Return the total number of cached entries across all repositories."""
     with _cache_lock:
         return len(_cache)
+
+
+def get_stats() -> dict:
+    """Return cache statistics for answers and retrieval cache."""
+    try:
+        from retrieval_cache import retrieval_cache
+        retrieval_stats = retrieval_cache.get_stats()
+    except Exception:
+        retrieval_stats = {}
+
+    with _cache_lock:
+        return {
+            "answer_cache": {
+                "size": len(_cache),
+                "max_size": MAX_CACHE_SIZE,
+            },
+            "retrieval_cache": retrieval_stats,
+        }
+
