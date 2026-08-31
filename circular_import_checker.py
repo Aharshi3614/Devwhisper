@@ -96,7 +96,7 @@ def check_import_circular(files_depend: dict[str, list[str]]) -> list[str]:
 
     for file_name in files_depend:
         if _has_cycle(file_name, [file_name], files_depend):
-            import_circular.append(file_name+"is in a circular import")
+            import_circular.append(file_name + " is in a circular import")
 
     return import_circular
 

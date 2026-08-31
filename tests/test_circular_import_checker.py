@@ -123,3 +123,15 @@ def test_check_detects_indirect_circular_chain():
     # Three files forming a cycle: a imports b, b imports c, c imports a.
     files = {"a": ["b"], "b": ["c"], "c": ["a"]}
     assert check_import_circular(files) != []
+
+
+def test_check_message_format_has_space_after_name():
+    # The message must read "<name> is in a circular import" (with a space),
+    # matching the documented contract in check_import_circular's docstring.
+    files = {"alpha": ["beta"], "beta": ["alpha"]}
+    result = check_import_circular(files)
+    assert result, "expected at least one circular-import message"
+    for message in result:
+        assert " is in a circular import" in message
+        # The module name and the phrase must not be run together.
+        assert "is in a circular import" not in message.replace(" is in a circular import", "")
