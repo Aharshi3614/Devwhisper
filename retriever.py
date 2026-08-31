@@ -1071,12 +1071,23 @@ def retrieve(
     """
     query, repo_id, context = _resolve_request_context(query, repo_id, context)
 
-    # Extract any inline metadata filters (e.g. file:main.py, type:function)
+    # Extract any inline metadata filters (e.g. file:main.py, type:function,
+    # repo:backend).
     query, inline_filters = extract_query_filters(query)
+    inline_repository = inline_filters.pop("repository", None)
+
+    # Copy rather than update in place: `metadata_filter` belongs to the
+    # caller, and a caller that builds one standing filter and reuses it
+    # across queries would otherwise accumulate every directive any user has
+    # ever typed, into every later query (issue #308).
+    #
+    # The explicit argument wins on a key conflict. A caller that passed a
+    # filter meant it; an inline directive must not be able to widen or
+    # redirect it.
     if inline_filters:
-        if metadata_filter is None:
-            metadata_filter = {}
-        metadata_filter.update(inline_filters)
+        merged = dict(inline_filters)
+        merged.update(metadata_filter or {})
+        metadata_filter = merged
 
     hook_registry.execute_pre_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id})
     if repo_id is not None:
@@ -1096,6 +1107,17 @@ def retrieve(
         repo_list = [repositories]
     elif isinstance(repositories, list):
         repo_list = repositories
+
+    # An inline `repo:` directive routes into the same repository filtering as
+    # the `repositories` argument rather than into `metadata_filter`, so it
+    # goes through _build_qdrant_filter()'s MatchAny handling and through
+    # _passes_filters() on the sparse side — the machinery that already exists
+    # for this, and that knows shared-collection mode from repo-isolated mode.
+    #
+    # An explicit `repositories` argument again wins: the directive can narrow
+    # nothing it was not already allowed to see.
+    if inline_repository is not None and repo_list is None:
+        repo_list = [inline_repository]
 
     # ── Dense vector search (Qdrant) ────────────────────────────────────
     vector = embedder.encode(query).tolist()
