@@ -30,12 +30,16 @@ from config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
+    MAX_PROMPT_CONTEXT_TOKENS,
+    ENABLE_CONTEXT_COMPRESSION,
 )
+from context_packer import pack_context
 
 # ---------------------------------------------------------------------------
 # System prompt — strict codebase-only answering
 # ---------------------------------------------------------------------------
 from prompt_builder import build_messages, SYSTEM_PROMPT, USER_INSTRUCTIONS, prepare_context, prepare_user_content
+
 
 # Re-export for backwards compatibility
 _SYSTEM_PROMPT = SYSTEM_PROMPT
@@ -188,7 +192,12 @@ def generate_response(
     try:
         client = _get_client()
         model = _get_model()
-        messages = build_messages(user_query, context, history)
+        packed_context, pack_stats = pack_context(
+            context,
+            max_tokens=MAX_PROMPT_CONTEXT_TOKENS,
+            enable_compression=ENABLE_CONTEXT_COMPRESSION,
+        )
+        messages = build_messages(user_query, packed_context, history)
         response = client.chat.completions.create(
             model=model,
             messages=messages,
@@ -218,6 +227,7 @@ def generate_response(
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
+                "context_stats": pack_stats,
                 "timestamp": time.time(),
             })
 
@@ -263,12 +273,18 @@ def generate_response_stream(
     model = _get_model()
     try:
         client = _get_client()
-        messages = build_messages(user_query, context, history)
+        packed_context, _ = pack_context(
+            context,
+            max_tokens=MAX_PROMPT_CONTEXT_TOKENS,
+            enable_compression=ENABLE_CONTEXT_COMPRESSION,
+        )
+        messages = build_messages(user_query, packed_context, history)
         response = client.chat.completions.create(
             model=model,
             messages=messages,
             stream=True,
         )
+
 
         for chunk in response:
             if chunk.choices and chunk.choices[0].delta.content:

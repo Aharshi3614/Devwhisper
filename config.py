@@ -645,10 +645,14 @@ def validate_config() -> None:
 validate_config()
 
 
+_in_testing = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules or os.getenv("TESTING", "false").lower() in ("true", "1", "yes")
+
 PROMPT_PREVIEW_MODE: bool = os.getenv("PROMPT_PREVIEW_MODE", "false").lower() in ("true", "1", "yes")
 
+MAX_PROMPT_CONTEXT_TOKENS: Final = _env_int("MAX_PROMPT_CONTEXT_TOKENS", 4096, min_value=128)
+ENABLE_CONTEXT_COMPRESSION: Final = os.getenv("ENABLE_CONTEXT_COMPRESSION", "true").lower() in ("true", "1", "yes")
+
 # Rate limiting and retrieval cache configuration
-_in_testing = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules or os.getenv("TESTING", "false").lower() in ("true", "1", "yes")
 _default_rate_limit_enabled = "false" if _in_testing else "true"
 RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", _default_rate_limit_enabled).lower() in ("true", "1", "yes")
 RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
@@ -659,7 +663,8 @@ if _exempt_paths_env:
 else:
     RATE_LIMIT_EXEMPT_PATHS: set[str] = {"/health", "/", "/docs", "/openapi.json", "/redoc"}
 
-RETRIEVAL_CACHE_ENABLED: bool = os.getenv("RETRIEVAL_CACHE_ENABLED", "false" if _in_testing else "true").lower() in ("true", "1", "yes")
+_default_retrieval_cache_enabled = "false" if _in_testing else "true"
+RETRIEVAL_CACHE_ENABLED: bool = os.getenv("RETRIEVAL_CACHE_ENABLED", _default_retrieval_cache_enabled).lower() in ("true", "1", "yes")
 
 __all__ = [
     "ConfigError",
@@ -698,6 +703,8 @@ __all__ = [
     "LLM_BASE_URL",
     "LLM_MODEL",
     "PROMPT_PREVIEW_MODE",
+    "MAX_PROMPT_CONTEXT_TOKENS",
+    "ENABLE_CONTEXT_COMPRESSION",
     "RATE_LIMIT_ENABLED",
     "RATE_LIMIT_RPM",
     "RATE_LIMIT_BURST",
@@ -705,3 +712,4 @@ __all__ = [
     "RETRIEVAL_CACHE_ENABLED",
     "validate_config",
 ]
+

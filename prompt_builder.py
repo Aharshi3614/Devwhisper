@@ -8,8 +8,14 @@ Separates prompt construction into clear, decoupled stages:
 
 import re
 from typing import List, Dict, Any
+from context_packer import pack_context, estimate_token_count
 
-from config import MAX_PROMPT_CONTEXT_CHARS, MAX_PROMPT_HISTORY_CHARS
+from config import (
+    MAX_PROMPT_CONTEXT_CHARS,
+    MAX_PROMPT_HISTORY_CHARS,
+    MAX_PROMPT_CONTEXT_TOKENS,
+    ENABLE_CONTEXT_COMPRESSION,
+)
 from logger import logger
 
 # retrieve() formats each fused chunk as a block beginning "Result <n>:".
@@ -64,36 +70,22 @@ INSTRUCTIONS:
 """
 
 
-def prepare_context(context: str, max_length: int | None = None) -> str:
+def prepare_context(
+    context: str,
+    max_length: int | None = None,
+    max_tokens: int | None = None,
+    enable_compression: bool = True,
+) -> str:
     """
-    Stage 1: Context Preparation.
-
-    Clean, format, and truncate retrieved code context before embedding it in
-    a prompt.
-
-    ``max_length`` used to default to None and *both* callers omitted it, so
-    the branch below was dead and the context went to the provider at whatever
-    size retrieval produced. Nothing upstream bounded it: a chunk is
-    ``INDEX_CHUNK_SIZE`` lines and a line has no length limit, so a single
-    minified or generated file could overrun any context window. The provider
-    rejected the request, ``generate_response_stream()`` caught the error, and
-    the user got a generic apology that said nothing about prompt size
-    (issue #295).
-
-    It now defaults to :data:`MAX_PROMPT_CONTEXT_CHARS`. Pass ``0`` to disable
-    truncation explicitly — ``None`` means "use the configured budget", which
-    is the safe default rather than the unlimited one.
-
-    Args:
-        context: The formatted context string from ``retriever.retrieve()``.
-        max_length: Character budget. None uses the configured default;
-            0 disables truncation.
-
-    Returns:
-        The cleaned, possibly truncated context.
+    Stage 1: Context Preparation & Token Budgeting.
+    Clean, format, compress, and truncate retrieved code context within token limits.
     """
     if not context:
         return ""
+
+    if max_tokens is not None:
+        packed, _ = pack_context(context, max_tokens=max_tokens, enable_compression=enable_compression)
+        return packed
 
     cleaned_context = context.strip()
 
@@ -245,27 +237,28 @@ def generate_prompt_preview(user_query: str, context: str, history: str = "") ->
     prompt that differs from the one actually sent, which defeats the point of
     a preview endpoint.
     """
-    prepared_ctx = prepare_context(context)
-    prepared_history = prepare_history(history)
-    messages = build_messages(user_query, context, history)
-
-    original_context_chars = len((context or "").strip())
+    original_context_chars = len(context or "")
     original_history_chars = len(history or "")
 
+    packed_ctx, telemetry = pack_context(context, max_tokens=MAX_PROMPT_CONTEXT_TOKENS, enable_compression=ENABLE_CONTEXT_COMPRESSION)
+    prepared_history = prepare_history(history)
+    messages = build_messages(user_query, packed_ctx, prepared_history)
     return {
         "user_query": user_query,
-        "retrieved_context": prepared_ctx,
+        "retrieved_context": packed_ctx,
+        "context_telemetry": telemetry,
         "conversation_history": prepared_history,
         "system_prompt": SYSTEM_PROMPT.strip(),
         "final_prompt_messages": messages,
         "budget": {
             "max_context_chars": MAX_PROMPT_CONTEXT_CHARS,
             "max_history_chars": MAX_PROMPT_HISTORY_CHARS,
-            "context_chars": len(prepared_ctx),
+            "context_chars": len(packed_ctx),
             "original_context_chars": original_context_chars,
-            "context_truncated": len(prepared_ctx) != original_context_chars,
+            "context_truncated": telemetry.get("chunks_truncated", 0) > 0 or TRUNCATION_NOTICE in packed_ctx,
             "history_chars": len(prepared_history),
             "original_history_chars": original_history_chars,
             "history_truncated": len(prepared_history) != original_history_chars,
         },
     }
+
