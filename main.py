@@ -56,6 +56,7 @@ from config import (
     MAX_ARCHIVE_ENTRIES,
     MAX_COMPRESSION_RATIO,
 )
+from rate_limiter import RateLimitMiddleware
 from archive_safety import (
     ArchiveTooLarge,
     UnsafeArchiveMember,
@@ -130,6 +131,7 @@ class RequestPreprocessingMiddleware(BaseHTTPMiddleware):
             from errors import error_response
             return error_response(500, "An unexpected server error occurred. Please try again.")
 
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestPreprocessingMiddleware)
 app.add_middleware(RequestIDMiddleware)
 

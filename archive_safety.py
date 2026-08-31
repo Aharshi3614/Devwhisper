@@ -184,6 +184,9 @@ def validate_archive_limits(
     return stats
 
 
+import posixpath
+
+
 def is_safe_member(name: str) -> bool:
     """
     Return whether *name* stays inside the extraction directory.
@@ -202,8 +205,9 @@ def is_safe_member(name: str) -> bool:
     if os.path.splitdrive(candidate)[0]:
         return False
 
-    normalised = os.path.normpath(candidate)
+    normalised = posixpath.normpath(candidate)
     return not (normalised == ".." or normalised.startswith("../"))
+
 
 
 def safe_extract_all(
