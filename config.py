@@ -28,6 +28,7 @@ Usage:
  from config import EMBEDDING_MODEL_NAME, QDRANT_URL, etc.
 """
 
+import sys
 import json
 import os
 from pathlib import Path
@@ -347,6 +348,38 @@ RETRIEVAL_TOP_K: Final = _env_int("RETRIEVAL_TOP_K", 6, min_value=1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Prompt budget
+# ═══════════════════════════════════════════════════════════════════════════
+MAX_PROMPT_CONTEXT_CHARS: Final = _env_int(
+    "MAX_PROMPT_CONTEXT_CHARS", 48_000, min_value=1_000
+)
+"""Character ceiling for the retrieved code context in one prompt.
+
+Nothing upstream bounds this. A chunk is INDEX_CHUNK_SIZE *lines*, and a line
+has no length limit — minified JS, generated code, long data literals and
+vendored files all pass collect_indexable_files() and are chunked by line
+count. MAX_FILE_SIZE_MB bounds the file, not the chunk. So RETRIEVAL_TOP_K
+chunks could exceed any provider's context window, and the request failed with
+nothing but a generic apology to show for it.
+
+48,000 characters is roughly 12–16k tokens of source, which leaves ample room
+for the system prompt, history and the answer inside a modest window while
+being generous enough that ordinary repositories never reach it.
+"""
+
+MAX_PROMPT_HISTORY_CHARS: Final = _env_int(
+    "MAX_PROMPT_HISTORY_CHARS", 8_000, min_value=0
+)
+"""Character ceiling for conversation history in one prompt.
+
+Budgeted separately from code context, and deliberately much smaller. History
+holds up to max_history_per_session complete previous answers; sharing one
+budget let an old, long answer crowd out the code the current question is
+actually about, which is the less valuable of the two.
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Cache settings
 # ═══════════════════════════════════════════════════════════════════════════
 CACHE_SIMILARITY_THRESHOLD: Final = _env_float(
@@ -378,8 +411,11 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
         ),
     )
 
-SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md"})
+SUPPORTED_EXTENSIONS: Final = frozenset(
+    {".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java"}
+)
 """File extensions eligible for indexing."""
+
 
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
@@ -395,6 +431,41 @@ MAX_FILE_SIZE_MB: Final = _env_or_json("MAX_FILE_SIZE_MB", 1, min_value=1)
 
 MAX_FILE_SIZE_BYTES: Final = MAX_FILE_SIZE_MB * 1024 * 1024
 """Maximum file size in bytes (derived from MAX_FILE_SIZE_MB)."""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Uploaded archive limits (issue #310)
+# ═══════════════════════════════════════════════════════════════════════════
+# MAX_FILE_SIZE_BYTES above bounds a *source file* the indexer chooses to read.
+# It is applied by collect_indexable_files(), which runs after extraction has
+# already written the bytes to disk, so it does not bound an upload. These do.
+MAX_UPLOAD_SIZE_MB: Final = _env_or_json("MAX_UPLOAD_SIZE_MB", 100, min_value=1)
+"""Maximum size of an uploaded ZIP archive, in megabytes."""
+
+MAX_UPLOAD_SIZE_BYTES: Final = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+"""Maximum size of an uploaded ZIP archive, in bytes."""
+
+MAX_EXTRACTED_SIZE_MB: Final = _env_or_json(
+    "MAX_EXTRACTED_SIZE_MB", 500, min_value=1
+)
+"""Maximum total uncompressed size of an uploaded archive, in megabytes."""
+
+MAX_EXTRACTED_SIZE_BYTES: Final = MAX_EXTRACTED_SIZE_MB * 1024 * 1024
+"""Maximum total uncompressed size of an uploaded archive, in bytes."""
+
+MAX_ARCHIVE_ENTRIES: Final = _env_or_json("MAX_ARCHIVE_ENTRIES", 20000, min_value=1)
+"""Maximum number of members in an uploaded archive."""
+
+MAX_COMPRESSION_RATIO: Final = _env_float(
+    "MAX_COMPRESSION_RATIO", 100.0, min_value=1.0
+)
+"""Maximum uncompressed-to-compressed ratio for an uploaded archive.
+
+Checked in addition to the absolute total because the two catch different
+things: the total catches "this is simply too big", the ratio catches a small
+upload engineered to expand enormously — the shape of a deliberate bomb rather
+than of a large project. Ordinary source trees compress well under 20x.
+"""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -467,6 +538,20 @@ def validate_config() -> None:
                      fixes for each.
     """
     errors: list[str] = []
+
+    if MAX_PROMPT_CONTEXT_CHARS < 1000:
+        errors.append(
+            f"- MAX_PROMPT_CONTEXT_CHARS must be at least 1000, got "
+            f"{MAX_PROMPT_CONTEXT_CHARS}. A budget below that cannot hold a "
+            f"single chunk. Fix: export MAX_PROMPT_CONTEXT_CHARS=48000"
+        )
+
+    if MAX_PROMPT_HISTORY_CHARS < 0:
+        errors.append(
+            f"- MAX_PROMPT_HISTORY_CHARS must be >= 0, got "
+            f"{MAX_PROMPT_HISTORY_CHARS}. Use 0 to drop history entirely. "
+            f"Fix: export MAX_PROMPT_HISTORY_CHARS=8000"
+        )
 
     if RETRIEVAL_TOP_K < 1:
         errors.append(
@@ -562,6 +647,18 @@ validate_config()
 
 PROMPT_PREVIEW_MODE: bool = os.getenv("PROMPT_PREVIEW_MODE", "false").lower() in ("true", "1", "yes")
 
+# Rate limiting configuration
+_in_testing = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules or os.getenv("TESTING", "false").lower() in ("true", "1", "yes")
+_default_rate_limit_enabled = "false" if _in_testing else "true"
+RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", _default_rate_limit_enabled).lower() in ("true", "1", "yes")
+RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
+RATE_LIMIT_BURST: int = int(os.getenv("RATE_LIMIT_BURST", "10"))
+_exempt_paths_env = os.getenv("RATE_LIMIT_EXEMPT_PATHS")
+if _exempt_paths_env:
+    RATE_LIMIT_EXEMPT_PATHS: set[str] = set(p.strip() for p in _exempt_paths_env.split(",") if p.strip())
+else:
+    RATE_LIMIT_EXEMPT_PATHS: set[str] = {"/health", "/", "/docs", "/openapi.json", "/redoc"}
+
 __all__ = [
     "ConfigError",
     "OUTPUT_DIRECTORY",
@@ -571,6 +668,8 @@ __all__ = [
     "QDRANT_COLLECTION_NAME",
     "QDRANT_SIMILARITY_THRESHOLD",
     "RETRIEVAL_TOP_K",
+    "MAX_PROMPT_CONTEXT_CHARS",
+    "MAX_PROMPT_HISTORY_CHARS",
     "CACHE_SIMILARITY_THRESHOLD",
     "INDEX_CHUNK_SIZE",
     "INDEX_CHUNK_OVERLAP",
@@ -578,6 +677,12 @@ __all__ = [
     "SAMPLE_CODEBASE_DIRECTORY",
     "MAX_FILE_SIZE_MB",
     "MAX_FILE_SIZE_BYTES",
+    "MAX_UPLOAD_SIZE_MB",
+    "MAX_UPLOAD_SIZE_BYTES",
+    "MAX_EXTRACTED_SIZE_MB",
+    "MAX_EXTRACTED_SIZE_BYTES",
+    "MAX_ARCHIVE_ENTRIES",
+    "MAX_COMPRESSION_RATIO",
     "RRF_K",
     "HYBRID_TOP_K",
     "BM25_INDEX_PATH",
@@ -591,5 +696,9 @@ __all__ = [
     "LLM_BASE_URL",
     "LLM_MODEL",
     "PROMPT_PREVIEW_MODE",
+    "RATE_LIMIT_ENABLED",
+    "RATE_LIMIT_RPM",
+    "RATE_LIMIT_BURST",
+    "RATE_LIMIT_EXEMPT_PATHS",
     "validate_config",
 ]

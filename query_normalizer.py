@@ -39,30 +39,59 @@ class QueryNormalizer:
                 normalized_tokens.append(token.lower())
         return " ".join(normalized_tokens)
 
+    #: Directive keyword -> the payload field it filters on.
+    #:
+    #: Every key here is both stripped from the query text and mapped to a
+    #: filter. The two used to be driven by separate lists — ``repo`` was in
+    #: the regex, so it was deleted from the query, but had no branch in the
+    #: mapping, so it was silently discarded (issue #308). Deriving the
+    #: pattern from this table makes that class of mismatch unrepresentable:
+    #: a key cannot be stripped unless it is also mapped.
+    DIRECTIVE_FIELDS = {
+        "file": "file",
+        "type": "symbol_type",
+        "symbol": "symbol_name",
+        "repo": "repository",
+    }
+
+    #: Built from DIRECTIVE_FIELDS rather than restated, for the reason above.
+    DIRECTIVE_PATTERN = (
+        r'\b(' + "|".join(DIRECTIVE_FIELDS) + r'):([a-zA-Z0-9_.\-]+)\b'
+    )
+
     def extract_filters(self, query: str) -> tuple[str, dict[str, str]]:
         """
-        Extract structured filter directives such as 'file:app.py' or 'type:function'
-        from query strings, returning the clean query text and extracted filter dictionary.
+        Extract structured filter directives from a query string.
+
+        Recognises ``file:app.py``, ``type:function``, ``symbol:retrieve`` and
+        ``repo:backend``, returning the query with the directives removed and
+        a dict of payload field -> value.
+
+        A directive is only removed from the query if it is also returned as a
+        filter. ``repo:`` used to be removed without being returned, so
+        ``"show symbol:retrieve repo:devwhisper"`` reduced to the query
+        ``"show"`` and searched whichever repository happened to be active,
+        with no indication that anything had been ignored.
+
+        Args:
+            query: Raw query string, possibly containing directives.
+
+        Returns:
+            ``(clean_query, filters)``. Keys in *filters* are payload field
+            names, not directive keywords — ``type:`` maps to ``symbol_type``,
+            ``repo:`` to ``repository``.
         """
         if not query:
             return "", {}
 
         extracted_filters = {}
-        # Match pattern key:value
-        pattern = r'\b(file|type|symbol|repo):([a-zA-Z0-9_.\-]+)\b'
-        
-        matches = re.findall(pattern, query, re.IGNORECASE)
+        matches = re.findall(self.DIRECTIVE_PATTERN, query, re.IGNORECASE)
         for key, val in matches:
-            canonical_key = key.lower()
-            if canonical_key == "file":
-                extracted_filters["file"] = val
-            elif canonical_key == "type":
-                extracted_filters["symbol_type"] = val
-            elif canonical_key == "symbol":
-                extracted_filters["symbol_name"] = val
+            field = self.DIRECTIVE_FIELDS[key.lower()]
+            extracted_filters[field] = val
 
         # Strip directives out of search query
-        clean_query = re.sub(pattern, "", query).strip()
+        clean_query = re.sub(self.DIRECTIVE_PATTERN, "", query, flags=re.IGNORECASE).strip()
         clean_query = self.normalize_whitespace(clean_query)
         return clean_query, extracted_filters
 
