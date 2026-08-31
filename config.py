@@ -28,6 +28,7 @@ Usage:
  from config import EMBEDDING_MODEL_NAME, QDRANT_URL, etc.
 """
 
+import sys
 import json
 import os
 from pathlib import Path
@@ -410,8 +411,11 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
         ),
     )
 
-SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md"})
+SUPPORTED_EXTENSIONS: Final = frozenset(
+    {".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java"}
+)
 """File extensions eligible for indexing."""
+
 
 SAMPLE_CODEBASE_DIRECTORY: Final = os.getenv(
     "SAMPLE_CODEBASE_DIRECTORY", "./sample_codebase"
@@ -427,6 +431,41 @@ MAX_FILE_SIZE_MB: Final = _env_or_json("MAX_FILE_SIZE_MB", 1, min_value=1)
 
 MAX_FILE_SIZE_BYTES: Final = MAX_FILE_SIZE_MB * 1024 * 1024
 """Maximum file size in bytes (derived from MAX_FILE_SIZE_MB)."""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Uploaded archive limits (issue #310)
+# ═══════════════════════════════════════════════════════════════════════════
+# MAX_FILE_SIZE_BYTES above bounds a *source file* the indexer chooses to read.
+# It is applied by collect_indexable_files(), which runs after extraction has
+# already written the bytes to disk, so it does not bound an upload. These do.
+MAX_UPLOAD_SIZE_MB: Final = _env_or_json("MAX_UPLOAD_SIZE_MB", 100, min_value=1)
+"""Maximum size of an uploaded ZIP archive, in megabytes."""
+
+MAX_UPLOAD_SIZE_BYTES: Final = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+"""Maximum size of an uploaded ZIP archive, in bytes."""
+
+MAX_EXTRACTED_SIZE_MB: Final = _env_or_json(
+    "MAX_EXTRACTED_SIZE_MB", 500, min_value=1
+)
+"""Maximum total uncompressed size of an uploaded archive, in megabytes."""
+
+MAX_EXTRACTED_SIZE_BYTES: Final = MAX_EXTRACTED_SIZE_MB * 1024 * 1024
+"""Maximum total uncompressed size of an uploaded archive, in bytes."""
+
+MAX_ARCHIVE_ENTRIES: Final = _env_or_json("MAX_ARCHIVE_ENTRIES", 20000, min_value=1)
+"""Maximum number of members in an uploaded archive."""
+
+MAX_COMPRESSION_RATIO: Final = _env_float(
+    "MAX_COMPRESSION_RATIO", 100.0, min_value=1.0
+)
+"""Maximum uncompressed-to-compressed ratio for an uploaded archive.
+
+Checked in addition to the absolute total because the two catch different
+things: the total catches "this is simply too big", the ratio catches a small
+upload engineered to expand enormously — the shape of a deliberate bomb rather
+than of a large project. Ordinary source trees compress well under 20x.
+"""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -629,6 +668,12 @@ __all__ = [
     "SAMPLE_CODEBASE_DIRECTORY",
     "MAX_FILE_SIZE_MB",
     "MAX_FILE_SIZE_BYTES",
+    "MAX_UPLOAD_SIZE_MB",
+    "MAX_UPLOAD_SIZE_BYTES",
+    "MAX_EXTRACTED_SIZE_MB",
+    "MAX_EXTRACTED_SIZE_BYTES",
+    "MAX_ARCHIVE_ENTRIES",
+    "MAX_COMPRESSION_RATIO",
     "RRF_K",
     "HYBRID_TOP_K",
     "BM25_INDEX_PATH",

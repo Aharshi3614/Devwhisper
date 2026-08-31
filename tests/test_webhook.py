@@ -39,7 +39,7 @@ def pipeline():
         seen.append(query)
         return ("context for " + query, ["a.py"], {"a.py": 90})
 
-    def fake_stream(query, context, history=""):
+    def fake_stream(query, context, history="", status=None):
         yield f"answer to {query}"
 
     with patch.object(main, "retrieve", fake_retrieve), \
