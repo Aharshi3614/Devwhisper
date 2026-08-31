@@ -4,8 +4,10 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 
+import logging
+
 from main import app
-from errors import ErrorResponse, error_response
+from errors import ErrorResponse, error_response, safe_execute
 
 
 @pytest.fixture(scope="module")
@@ -136,3 +138,57 @@ def test_all_error_responses_have_consistent_keys(client):
         }
     })
     assert required_keys == set(r2.json().keys())
+
+
+# --- Unit tests for safe_execute decorator ---
+
+def test_safe_execute_logs_custom_error_message(caplog):
+    """The caller-supplied error_message must appear in the log on failure."""
+
+    @safe_execute(error_message="Failed while widgetizing", default_return="fallback")
+    def boom():
+        raise ValueError("raw exception text")
+
+    with caplog.at_level(logging.ERROR, logger="devwhisper"):
+        result = boom()
+
+    assert result == "fallback"
+    # The custom context and the wrapped function name are both logged.
+    assert "Failed while widgetizing" in caplog.text
+    assert "boom" in caplog.text
+    # The underlying exception detail is preserved too.
+    assert "raw exception text" in caplog.text
+
+
+def test_safe_execute_returns_default_on_exception():
+    """default_return is returned when the wrapped function raises."""
+
+    @safe_execute(error_message="ignored here", default_return=42)
+    def always_fails():
+        raise RuntimeError("nope")
+
+    assert always_fails() == 42
+
+
+def test_safe_execute_passes_through_on_success():
+    """A successful call returns the function's real result unchanged."""
+
+    @safe_execute(error_message="should not be used", default_return=None)
+    def add(a, b):
+        return a + b
+
+    assert add(2, 3) == 5
+
+
+def test_safe_execute_uses_default_message_when_unspecified(caplog):
+    """When no error_message is given, the default context string is logged."""
+
+    @safe_execute()
+    def boom():
+        raise ValueError("boom")
+
+    with caplog.at_level(logging.ERROR, logger="devwhisper"):
+        result = boom()
+
+    assert result is None
+    assert "An unexpected error occurred" in caplog.text
