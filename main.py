@@ -40,7 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata, \
     invalidate_bm25_cache
-from llm import generate_response, generate_response_stream
+from llm import generate_response, generate_response_stream, GenerationStatus
 from cache import (
     get as cache_get,
     put as cache_put,
@@ -48,14 +48,29 @@ from cache import (
     clear as cache_clear,
     get_stats as cache_get_stats,
 )
-
 from handlers import route_command
 from errors import error_response
 from pipeline_validator import PipelineTracker, PipelineStageError
 from indexer import index_directory, progress_state, get_before_cache_data, collect_indexable_files, \
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
-from config import SAMPLE_CODEBASE_DIRECTORY, QDRANT_COLLECTION_NAME
+from config import (
+    SAMPLE_CODEBASE_DIRECTORY,
+    QDRANT_COLLECTION_NAME,
+    MAX_UPLOAD_SIZE_BYTES,
+    MAX_EXTRACTED_SIZE_BYTES,
+    MAX_ARCHIVE_ENTRIES,
+    MAX_COMPRESSION_RATIO,
+)
+from rate_limiter import RateLimitMiddleware
+from archive_safety import (
+    ArchiveTooLarge,
+    UnsafeArchiveMember,
+    safe_extract_all,
+    stream_to_file,
+    sweep_orphan_uploads,
+    validate_archive_limits,
+)
 import repositories
 import contextvars
 import logging
@@ -108,6 +123,22 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
+
+class RequestPreprocessingMiddleware(BaseHTTPMiddleware):
+    """Middleware for request logging and centralized error handling (Issue #190)."""
+
+    async def dispatch(self, request: Request, call_next):
+        timestamp = datetime.now(timezone.utc).isoformat()
+        logger.info(f"Incoming request: {request.method} {request.url.path} at {timestamp}")
+        try:
+            return await call_next(request)
+        except Exception:
+            logger.error("SERVER ERROR", exc_info=True)
+            from errors import error_response
+            return error_response(500, "An unexpected server error occurred. Please try again.")
+
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestPreprocessingMiddleware)
 app.add_middleware(RequestIDMiddleware)
 
 
@@ -251,15 +282,34 @@ def queue_worker():
                         shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
                     os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
 
-                    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-                        zip_ref.extractall(SAMPLE_CODEBASE_DIRECTORY)
-
-                    # Clean up temp file
-                    if os.path.exists(temp_zip_path):
-                        try:
-                            os.remove(temp_zip_path)
-                        except Exception:
-                            pass
+                    try:
+                        # extractall() decompresses every member in full. The
+                        # declared sizes were checked at upload, but a ZIP may
+                        # declare one size and deliver another, so the budget
+                        # is enforced again against the bytes actually written
+                        # (issue #310).
+                        extracted = safe_extract_all(
+                            temp_zip_path,
+                            SAMPLE_CODEBASE_DIRECTORY,
+                            max_extracted_bytes=MAX_EXTRACTED_SIZE_BYTES,
+                        )
+                        logger.info(
+                            "Extracted %.1f MB from %s",
+                            extracted / (1024 * 1024),
+                            os.path.basename(temp_zip_path),
+                        )
+                    finally:
+                        # In a finally, not after the extraction: an archive
+                        # that fails to extract is precisely the one nothing
+                        # will ever look at again, and the old placement left
+                        # it in the working directory forever.
+                        if os.path.exists(temp_zip_path):
+                            try:
+                                os.remove(temp_zip_path)
+                            except OSError:
+                                logger.warning(
+                                    "Could not remove %s", temp_zip_path
+                                )
                     directory = SAMPLE_CODEBASE_DIRECTORY
                 else:
                     # reindex: scan the registered path for this repository
@@ -310,6 +360,10 @@ def queue_worker():
 async def startup_event():
     """Warm up the embedder and check whether re-indexing is recommended."""
     threading.Thread(target=queue_worker, daemon=True).start()
+    # Archives orphaned by a restart with jobs still queued, or by an
+    # extraction that failed before this ran in a finally. Nothing else will
+    # ever look at them again, so a sweep here is what bounds them.
+    sweep_orphan_uploads()
     os.makedirs(repositories.OUTPUT_DIRECTORY, exist_ok=True)
     # sample_codebase is the default repo, but it is git-ignored and may be
     # absent on a fresh checkout — don't crash startup when it is missing.
@@ -375,6 +429,77 @@ def update_memory(session_id: str, user: str, assistant: str) -> None:
 def get_memory(session_id: str) -> str:
     """Return formatted history for a session."""
     return session_manager.get(session_id)
+
+
+def _persist_answer(
+    query: str,
+    session_id: str,
+    answer: str,
+    status: GenerationStatus,
+    context: str,
+) -> bool:
+    """
+    Store a completed answer in the cache and the session history.
+
+    Both streaming call sites used to end with the same four lines:
+
+        answer = "".join(full_response)
+        if answer and answer.strip():
+            cache_put(query, answer)
+            update_memory(session_id, query, answer)
+
+    "Non-empty" was the only test applied, and ``LLM_ERROR_MESSAGE`` is
+    non-empty — so a single expired API key or 429 pinned an apology into the
+    LRU. ``cache.get()`` then served it back for every query within
+    ``CACHE_SIMILARITY_THRESHOLD`` Jaccard distance, and promoted it to
+    most-recently-used on each hit, so it was the last entry to be evicted.
+    The outage outlived itself (issue #293).
+
+    ``cache.put()``'s docstring already said this was the caller's job:
+
+        Empty responses and failures should not be passed here; the caller is
+        responsible for only caching successful, non-empty answers.
+
+    Nothing enforced it. This does, in one place, for both call sites.
+
+    Args:
+        query: The user's question, used as the cache key.
+        session_id: Session whose history to append to.
+        answer: The full assembled answer, including the sources footer.
+        status: Generation status, already drained. A failed generation is
+            neither cached nor remembered.
+        context: The retrieved code context. Empty means retrieval found
+            nothing, so the answer is a "could not find this" placeholder
+            derived from no evidence — caching it would pin that verdict in
+            place across a re-index.
+
+    Returns:
+        True if the answer was persisted.
+    """
+    if status.failed:
+        # Not cached, and deliberately not written to history either: the
+        # apology would otherwise be replayed into the *prompt* of the next
+        # turn, showing the model its own error message as context.
+        logger.warning(
+            "Generation failed for session %s; answer not cached (%s)",
+            session_id,
+            type(status.error).__name__ if status.error else "no exception",
+        )
+        return False
+
+    if not answer or not answer.strip():
+        return False
+
+    if not context or not context.strip():
+        # Retrieval came back empty. Remember the exchange so the conversation
+        # still reads correctly, but do not cache a verdict reached without
+        # any evidence — re-indexing must be able to change the answer.
+        update_memory(session_id, query, answer)
+        return False
+
+    cache_put(query, answer)
+    update_memory(session_id, query, answer)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -490,15 +615,19 @@ def _answer_query(query: str, session_id: str):
 
     _stage("generation")
 
+    status = GenerationStatus()
+
     def event_generator():
         full_response = []
-        for token in generate_response_stream(query, context, history):
+        for token in generate_response_stream(query, context, history, status=status):
             full_response.append(token)
             yield token
 
         _stage("post_processing")
 
-        if sources:
+        # A failed generation has no sources worth footnoting — the apology is
+        # not derived from the retrieved chunks.
+        if sources and not status.failed:
             sources_str = _sources_display(sources, confidences)
             yield sources_str
             full_response.append(sources_str)
@@ -506,10 +635,7 @@ def _answer_query(query: str, session_id: str):
         # Update cache and session history on complete stream
         _stage("cache_insertion")
 
-        answer = "".join(full_response)
-        if answer and answer.strip():
-            cache_put(query, answer)
-            update_memory(session_id, query, answer)
+        _persist_answer(query, session_id, "".join(full_response), status, context)
 
     return event_generator()
 
@@ -539,79 +665,75 @@ async def vapi_webhook(request: Request):
         StreamingResponse with the answer(s), or JSONResponse with the
         assistant config, an acknowledgement, or an error.
     """
-    try:
-        body = await request.json()
-        logger.info("Incoming webhook payload: %s", body)
+    body = await request.json()
+    logger.info("Incoming webhook payload: %s", body)
 
-        message = body.get("message", {})
-        msg_type = message.get("type", "")
-        session_id = _get_session_id(message)
+    message = body.get("message", {})
+    msg_type = message.get("type", "")
+    session_id = _get_session_id(message)
 
-        # ── Assistant initialization ──────────────────────────────────────
-        if msg_type == "assistant-request":
-            return JSONResponse({
-                "assistant": {
-                    "firstMessage": "Hey, DevWhisper here. What are you building or debugging?",
-                    "model": {
-                        "provider": "openai",
-                        "model": "gpt-4o",
-                        "functions": [{
-                            "name": "query_codebase",
-                            "description": "Search and explain code or debug errors",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "query": {"type": "string"}
-                                },
-                                "required": ["query"]
-                            }
-                        }]
-                    },
-                    "voice": {"provider": "11labs", "voiceId": "burt"}
-                }
-            })
+    # ── Assistant initialization ──────────────────────────────────────
+    if msg_type == "assistant-request":
+        return JSONResponse({
+            "assistant": {
+                "firstMessage": "Hey, DevWhisper here. What are you building or debugging?",
+                "model": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "functions": [{
+                        "name": "query_codebase",
+                        "description": "Search and explain code or debug errors",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"}
+                            },
+                            "required": ["query"]
+                        }
+                    }]
+                },
+                "voice": {"provider": "11labs", "voiceId": "burt"}
+            }
+        })
 
-        # ── Function / tool call handling ─────────────────────────────────
-        if msg_type in ["function-call", "tool-calls"]:
-            try:
-                queries = _extract_tool_queries(message)
-            except ValueError as e:
-                logger.error("Rejected webhook tool call: %s", e)
-                return error_response(400, str(e))
+    # ── Function / tool call handling ─────────────────────────────────
+    if msg_type in ["function-call", "tool-calls"]:
+        try:
+            queries = _extract_tool_queries(message)
+        except ValueError as e:
+            logger.error("Rejected webhook tool call: %s", e)
+            return error_response(400, str(e))
 
-            if not queries:
-                # A function/tool payload we have no handler for. Nothing to
-                # answer, but nothing went wrong either.
-                return JSONResponse({"status": "ok", "results": []})
+        if not queries:
+            # A function/tool payload we have no handler for. Nothing to
+            # answer, but nothing went wrong either.
+            return JSONResponse({"status": "ok", "results": []})
 
-            if len(queries) == 1:
-                return StreamingResponse(
-                    _answer_query(queries[0], session_id),
-                    media_type="text/plain",
-                )
+        if len(queries) == 1:
+            return StreamingResponse(
+                _answer_query(queries[0], session_id),
+                media_type="text/plain",
+            )
 
-            # More than one query_codebase call in a single payload: answer
-            # every one of them in order instead of silently dropping all but
-            # the last. Each answer is labelled so the caller can tell them
-            # apart in the stream.
-            def multi_generator():
-                for position, query in enumerate(queries, start=1):
-                    if position > 1:
-                        yield "\n\n"
-                    yield f"**[{position}/{len(queries)}] {query}**\n\n"
-                    yield from _answer_query(query, session_id)
+        # More than one query_codebase call in a single payload: answer
+        # every one of them in order instead of silently dropping all but
+        # the last. Each answer is labelled so the caller can tell them
+        # apart in the stream.
+        def multi_generator():
+            for position, query in enumerate(queries, start=1):
+                if position > 1:
+                    yield "\n\n"
+                yield f"**[{position}/{len(queries)}] {query}**\n\n"
+                yield from _answer_query(query, session_id)
 
-            return StreamingResponse(multi_generator(), media_type="text/plain")
+        return StreamingResponse(multi_generator(), media_type="text/plain")
 
-        # ── Lifecycle events we do not act on ─────────────────────────────
-        # status-update, end-of-call-report, conversation-update, speech-update…
-        # Acknowledging these keeps routine Vapi callbacks out of the error log.
-        logger.info("Ignoring unhandled webhook message type: %r", msg_type)
-        return JSONResponse({"status": "ignored", "type": msg_type})
+    # ── Lifecycle events we do not act on ─────────────────────────────
+    # status-update, end-of-call-report, conversation-update, speech-update…
+    # Acknowledging these keeps routine Vapi callbacks out of the error log.
+    logger.info("Ignoring unhandled webhook message type: %r", msg_type)
+    return JSONResponse({"status": "ignored", "type": msg_type})
 
-    except Exception:
-        logger.error("SERVER ERROR", exc_info=True)
-        return error_response(500, "An unexpected server error occurred. Please try again.")
 
 
 @app.get("/health")
@@ -765,50 +887,49 @@ async def stream_query(request: Request):
     Returns:
         StreamingResponse (text/plain) with the generated answer.
     """
-    try:
-        body = await request.json()
-        query = body.get("query", "")
-        session_id = body.get("sessionId", "default")
+    body = await request.json()
+    query = body.get("query", "")
+    session_id = body.get("sessionId", "default")
 
-        if not query:
-            return error_response(400, "Query parameter is required and cannot be empty.")
+    if not query:
+        return error_response(400, "Query parameter is required and cannot be empty.")
 
-        # Cache lookup
-        cached = cache_get(query)
-        if cached is not None:
-            update_memory(session_id, query, cached)
+    # Cache lookup
+    cached = cache_get(query)
+    if cached is not None:
+        update_memory(session_id, query, cached)
 
-            async def cached_generator():
-                yield cached
+        async def cached_generator():
+            yield cached
 
-            return StreamingResponse(cached_generator(), media_type="text/plain")
+        return StreamingResponse(cached_generator(), media_type="text/plain")
 
-        # Cache miss: run retrieval
-        context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
-        history = get_memory(session_id)
+    # Cache miss: run retrieval
+    context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
+    history = get_memory(session_id)
 
-        def event_generator():
-            full_response = []
-            for token in generate_response_stream(query, context, history):
-                full_response.append(token)
-                yield token
+    status = GenerationStatus()
 
-            if sources:
-                sources_str = _sources_display(sources, confidences)
-                yield sources_str
-                full_response.append(sources_str)
+    def event_generator():
+        full_response = []
+        for token in generate_response_stream(
+            query, context, history, status=status
+        ):
+            full_response.append(token)
+            yield token
 
-            # Update cache and session history on complete stream
-            answer = "".join(full_response)
-            if answer and answer.strip():
-                cache_put(query, answer)
-                update_memory(session_id, query, answer)
+        if sources and not status.failed:
+            sources_str = _sources_display(sources, confidences)
+            yield sources_str
+            full_response.append(sources_str)
 
-        return StreamingResponse(event_generator(), media_type="text/plain")
+        # Update cache and session history on complete stream
+        _persist_answer(
+            query, session_id, "".join(full_response), status, context
+        )
 
-    except Exception:
-        logger.error("SERVER STREAM ERROR", exc_info=True)
-        return error_response(500, "An unexpected server error occurred in the stream. Please try again.")
+    return StreamingResponse(event_generator(), media_type="text/plain")
+
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +1036,21 @@ def start_indexing(dry_run: bool = False):
     return {"status": "started", "message": "Manual re-indexing job queued.", "job_id": job_id, "dry_run": dry_run}
 
 
+def _remove_temp_upload(path: str) -> None:
+    """
+    Delete a rejected upload's temp archive.
+
+    Every early return from the upload endpoint has to do this, and the one
+    that forgot is how the working directory filled with orphans.
+    """
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not remove %s: %s", path, exc)
+
+
 @app.post("/index/upload")
 async def upload_codebase(file: UploadFile = File(...)):
     """
@@ -926,17 +1062,50 @@ async def upload_codebase(file: UploadFile = File(...)):
     job_id = str(uuid.uuid4())
     temp_zip_path = f"temp_upload_{job_id}.zip"
     try:
-        with open(temp_zip_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Bounded as it arrives rather than after the fact: copyfileobj()
+        # copies until the client stops sending, so measuring afterwards
+        # means the disk is already full (issue #310). Content-Length is not
+        # trusted — the client supplies it, and a chunked request need not
+        # send one at all.
+        stream_to_file(file.file, temp_zip_path, MAX_UPLOAD_SIZE_BYTES)
+    except ArchiveTooLarge as e:
+        logger.warning("Rejected oversized upload %s: %s", file.filename, e)
+        return error_response(413, str(e))
     except Exception as e:
         logger.error("Failed to write uploaded file to disk: %s", e)
+        _remove_temp_upload(temp_zip_path)
         return error_response(500, f"Failed to save uploaded file: {e}")
 
     # Validate ZIP file structure immediately to give quick feedback
     if not zipfile.is_zipfile(temp_zip_path):
-        if os.path.exists(temp_zip_path):
-            os.remove(temp_zip_path)
+        _remove_temp_upload(temp_zip_path)
         return error_response(400, "Invalid ZIP archive.")
+
+    # Reject a bomb before extracting anything. Every value used here comes
+    # from the central directory, so nothing is decompressed to obtain it.
+    try:
+        stats = validate_archive_limits(
+            temp_zip_path,
+            max_extracted_bytes=MAX_EXTRACTED_SIZE_BYTES,
+            max_entries=MAX_ARCHIVE_ENTRIES,
+            max_ratio=MAX_COMPRESSION_RATIO,
+        )
+    except ArchiveTooLarge as e:
+        logger.warning("Rejected archive %s: %s", file.filename, e)
+        _remove_temp_upload(temp_zip_path)
+        return error_response(413, str(e))
+    except Exception as e:
+        logger.error("Could not inspect uploaded archive: %s", e)
+        _remove_temp_upload(temp_zip_path)
+        return error_response(400, "Invalid ZIP archive.")
+
+    logger.info(
+        "Accepted upload %s: %d entries, %.1f MB expanded, %.1fx ratio",
+        file.filename,
+        stats["entry_count"],
+        stats["declared_total"] / (1024 * 1024),
+        stats["ratio"],
+    )
 
     # Validate path traversal (Zip Slip) synchronously
     is_path_traversal = False
@@ -950,8 +1119,7 @@ async def upload_codebase(file: UploadFile = File(...)):
                 break
 
     if is_path_traversal:
-        if os.path.exists(temp_zip_path):
-            os.remove(temp_zip_path)
+        _remove_temp_upload(temp_zip_path)
         return error_response(400, f"Path traversal detected in ZIP: {invalid_member}")
 
     # Validate that ZIP contains supported files (.py, .md) synchronously
@@ -963,8 +1131,7 @@ async def upload_codebase(file: UploadFile = File(...)):
                 break
 
     if not has_supported_file:
-        if os.path.exists(temp_zip_path):
-            os.remove(temp_zip_path)
+        _remove_temp_upload(temp_zip_path)
         return error_response(400, "No supported files (.py, .md) found in the uploaded ZIP archive.")
 
     # Queue the job

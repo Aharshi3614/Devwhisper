@@ -29,6 +29,7 @@ Dependencies:
   - rank_bm25 (sparse keyword search)
 """
 
+import heapq
 import json
 import os
 import pickle
@@ -124,11 +125,13 @@ def invalidate_bm25_cache(repo_id: str | None = None) -> None:
             use :func:`clear_bm25_cache` to drop everything.
     """
     _bm25_data.pop(repo_id, None)
+    _symbol_index.pop(repo_id, None)
 
 
 def clear_bm25_cache() -> None:
     """Drop every cached BM25 index (all repositories)."""
     _bm25_data.clear()
+    _symbol_index.clear()
 
 
 def _get_bm25(repo_id: str | None) -> dict | None:
@@ -341,6 +344,49 @@ def _build_qdrant_filter(metadata_filter: dict | None, repository_names: list[st
     return qdrant_models.Filter(must=conditions) if conditions else None
 
 
+# How many extra candidates to pull past ``top_k`` before filtering. Metadata
+# and repository filters discard some of what BM25 ranks highest, so taking
+# exactly top_k would come up short whenever a filter is active. A multiplier
+# rather than fixed slack, so it scales with top_k.
+_CANDIDATE_OVERSHOOT = 4
+
+
+def _top_scoring_indices(scores, limit: int) -> list[int]:
+    """
+    Return the indices of the *limit* highest scores, best first.
+
+    This used to be a full sort of the whole corpus:
+
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+
+    ``O(N log N)`` with a Python-level ``key`` callback invoked N times, to
+    satisfy a ``HYBRID_TOP_K`` of 20. On a real target codebase — hundreds of
+    thousands of chunks — that is a large sort per question, on the request
+    thread, entirely to throw away all but twenty rows (issue #296).
+
+    ``heapq.nlargest`` is ``O(N log k)``, but the bigger win is that most
+    chunks never reach the heap at all: BM25 scores 0.0 for every chunk
+    sharing no term with the query, and that is the overwhelming majority.
+
+    Ordering is unchanged, ties included. ``nlargest`` over ``(score, -index)``
+    breaks ties by ascending index, which is what a stable descending sort of
+    ``range(len(scores))`` produced.
+
+    Args:
+        scores: Per-chunk BM25 scores.
+        limit: How many indices to return.
+
+    Returns:
+        Indices of the highest scoring chunks, best first. Chunks scoring zero
+        or less are never included — they share no term with the query.
+    """
+    if limit <= 0:
+        return []
+
+    candidates = ((score, -idx) for idx, score in enumerate(scores) if score > 0)
+    return [-neg_idx for _, neg_idx in heapq.nlargest(limit, candidates)]
+
+
 def _keyword_search(
     query: str,
     top_k: int = HYBRID_TOP_K,
@@ -356,27 +402,52 @@ def _keyword_search(
     tokenize_query = _tokenize(query)
     bm25 = bm25_data["bm25"]
     scores = bm25.get_scores(tokenize_query)
-    top_indices = sorted(
-        range(len(scores)), key=lambda i: scores[i], reverse=True
-    )
 
-    results = []
-    for idx in top_indices:
-        if scores[idx] > 0:
-            chunk = bm25_data["chunks"][idx].copy()
+    chunks = bm25_data["chunks"]
+    filtering = bool(metadata_filter or repository_names)
+
+    # Without a filter, the top top_k candidates are the answer and any
+    # overshoot is wasted work. With one, some of the best-scoring candidates
+    # will be discarded, so pull extra — and widen if that still falls short,
+    # rather than silently returning fewer results than asked for. A narrow
+    # filter (one file out of hundreds) needs a much deeper look than a broad
+    # one, and only it pays for that.
+    limit = top_k * _CANDIDATE_OVERSHOOT if filtering else top_k
+
+    while True:
+        candidates = _top_scoring_indices(scores, limit)
+        exhausted = len(candidates) < limit
+
+        results = []
+        for idx in candidates:
+            chunk = chunks[idx]
             # Apply metadata filter
             if not _matches_metadata_filter(chunk, metadata_filter):
                 continue
             # Apply repository filter if specified
-            if repository_names and chunk.get("repository") and chunk.get("repository") not in repository_names:
+            if (
+                repository_names
+                and chunk.get("repository")
+                and chunk.get("repository") not in repository_names
+            ):
                 continue
 
+            # Copied only once it is known to be a result, rather than for
+            # every candidate the filters are about to throw away.
+            chunk = chunk.copy()
             chunk["bm25_score"] = float(scores[idx])
             chunk["_idx"] = idx
             results.append(chunk)
-        if len(results) >= top_k:
-            break
-    return results
+
+            if len(results) >= top_k:
+                return results
+
+        # Fewer than top_k survived. Widen, unless every chunk that scores
+        # above zero has already been considered — beyond that there is
+        # nothing left to find, because BM25 gave the rest no score at all.
+        if exhausted:
+            return results
+        limit *= _CANDIDATE_OVERSHOOT
 
 
 # Question words and other sentence scaffolding that must never be treated as
@@ -452,6 +523,88 @@ def _extract_symbols(query: str) -> list[str]:
     return list(symbols)
 
 
+# Symbol lookup tables, one per repository, derived from the BM25 corpus:
+# {repo_id: (chunks, {lowercased symbol name: [chunk index, ...]},
+#            [indices of chunks with no symbol name])}
+#
+# The corpus list itself is held and compared with ``is``, so a reloaded BM25
+# payload — which ``_get_bm25()`` swaps in whenever the pickle changes on disk
+# — invalidates this automatically. Rebuilding costs one pass over the corpus
+# and happens once per re-index rather than once per query.
+#
+# Deliberately not keyed on ``id(chunks)``: CPython reuses the address of a
+# freed object, so once the previous corpus is dropped a newly allocated one
+# can land on the same id and silently inherit a stale index whose indices
+# point into a corpus that no longer exists. Holding the reference both makes
+# the comparison sound and keeps that from happening.
+_symbol_index: dict[
+    str | None, tuple[list[dict], dict[str, list[int]], list[int]]
+] = {}
+
+
+def clear_symbol_index() -> None:
+    """Drop every cached symbol lookup table."""
+    _symbol_index.clear()
+
+
+def _get_symbol_index(
+    repo_id: str | None,
+    chunks: list[dict],
+) -> tuple[dict[str, list[int]], list[int]]:
+    """
+    Return ``(by_name, text_only)`` lookup tables for *chunks*.
+
+    ``by_name`` maps a lowercased symbol name to the indices of the symbol
+    chunks carrying it. ``text_only`` lists the indices of everything else —
+    module-level chunks and payloads with no symbol name — which are the only
+    chunks that still need a full-text scan.
+
+    :func:`_exact_symbol_search` used to enumerate the entire corpus and ask
+    each chunk in turn whether its name was in the requested symbol list. For
+    the symbol chunks — the majority in any Python or JavaScript repository —
+    that is a dict lookup being done as a linear scan.
+
+    Args:
+        repo_id: Repository the corpus belongs to, used as the cache key.
+        chunks: The BM25 corpus.
+
+    Returns:
+        The two lookup tables.
+    """
+    cached = _symbol_index.get(repo_id)
+    if cached is not None and cached[0] is chunks:
+        return cached[1], cached[2]
+
+    by_name: dict[str, list[int]] = {}
+    text_only: list[int] = []
+    for idx, chunk in enumerate(chunks):
+        name = chunk.get("symbol_name")
+        if chunk.get("is_symbol", False) and name:
+            by_name.setdefault(name.lower(), []).append(idx)
+        else:
+            text_only.append(idx)
+
+    _symbol_index[repo_id] = (chunks, by_name, text_only)
+    return by_name, text_only
+
+
+def _passes_filters(
+    chunk: dict,
+    metadata_filter: dict | None,
+    repository_names: list[str] | None,
+) -> bool:
+    """Shared metadata + repository predicate for the sparse retrievers."""
+    if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
+        return False
+    if (
+        repository_names
+        and chunk.get("repository")
+        and chunk.get("repository") not in repository_names
+    ):
+        return False
+    return True
+
+
 def _exact_symbol_search(
     symbols: list[str],
     top_k: int = HYBRID_TOP_K,
@@ -461,6 +614,23 @@ def _exact_symbol_search(
 ) -> list[dict]:
     """
     Find chunks with exact symbol name matches, filtered by metadata and repositories, ranked by match count.
+
+    Two branches, as before, but neither enumerates the whole corpus any more:
+
+      * a chunk that *is* a symbol matches on its own name, which is an O(1)
+        lookup in the table :func:`_get_symbol_index` builds once per corpus;
+      * everything else needs the word-boundary text scan, and only those
+        chunks are visited.
+
+    Args:
+        symbols: Symbol candidates extracted from the query.
+        top_k: Maximum number of matches to return.
+        metadata_filter: Optional payload key/value equality filters.
+        repo_id: Repository whose corpus to search.
+        repository_names: Restrict results to these repository names.
+
+    Returns:
+        Matching chunks, best first, each carrying ``exact_match_count``.
     """
 
     # Checked before touching the index: with the symbol list now correctly
@@ -473,7 +643,31 @@ def _exact_symbol_search(
     if bm25_data is None:
         return []
 
-    # Compiled once for the whole corpus scan rather than per chunk.
+    chunks = bm25_data["chunks"]
+    by_name, text_only = _get_symbol_index(repo_id, chunks)
+
+    matches = []
+    seen: set[int] = set()
+
+    # ── Symbol chunks: direct lookup, no scan ──────────────────────────────
+    for sym in symbols:
+        for idx in by_name.get(sym.lower(), ()):
+            if idx in seen:
+                # Two extracted symbols matching one chunk name cannot happen
+                # (the name is a single string), but _extract_symbols() can
+                # return the same candidate in two casings.
+                continue
+            chunk = chunks[idx]
+            if not _passes_filters(chunk, metadata_filter, repository_names):
+                continue
+            seen.add(idx)
+            result = chunk.copy()
+            result["exact_match_count"] = 1
+            result["_idx"] = f"s_{idx}"
+            matches.append(result)
+
+    # ── Everything else: word-boundary scan over the remainder ─────────────
+    # Compiled once for the scan rather than per chunk.
     # \b anchors each symbol to a word boundary, so searching for "get" stops
     # scoring chunks that merely contain "budget", "target" or "forget".
     # Python treats "_" as a word character, so snake_case names are matched
@@ -482,31 +676,22 @@ def _exact_symbol_search(
         re.compile(r"\b" + re.escape(sym.lower()) + r"\b") for sym in symbols
     ]
 
-    matches = []
-    for idx, chunk in enumerate(bm25_data["chunks"]):
-        if metadata_filter and not _matches_metadata_filter(chunk, metadata_filter):
-            continue
-        if repository_names and chunk.get("repository") and chunk.get("repository") not in repository_names:
+    for idx in text_only:
+        chunk = chunks[idx]
+        if not _passes_filters(chunk, metadata_filter, repository_names):
             continue
 
-        chunk_name = chunk.get("symbol_name")
-        is_symbol = chunk.get("is_symbol", False)
-
-        if is_symbol and chunk_name:
-            count = sum(
-                1 for sym in symbols if chunk_name.lower() == sym.lower()
-            )
-        else:
-            text_lower = chunk["text"].lower()
-            count = sum(len(pattern.findall(text_lower)) for pattern in symbol_patterns)
-
+        text_lower = chunk["text"].lower()
+        count = sum(len(pattern.findall(text_lower)) for pattern in symbol_patterns)
         if count > 0:
             result = chunk.copy()
             result["exact_match_count"] = count
             result["_idx"] = f"s_{idx}"
             matches.append(result)
 
-    matches.sort(key=lambda x: -x["exact_match_count"])
+    # Ordered by match count, then by corpus position — the same result the
+    # previous full enumeration plus stable sort produced.
+    matches.sort(key=lambda x: (-x["exact_match_count"], int(x["_idx"][2:])))
     return matches[:top_k]
 
 
@@ -625,6 +810,108 @@ def _rrf_fusion(
         doc["rrf_score"] = score
         final.append(doc)
     return final
+
+
+# ---------------------------------------------------------------------------
+# Dense vector search
+# ---------------------------------------------------------------------------
+# Substrings Qdrant uses when the collection itself is absent. A missing
+# collection is a configuration/indexing problem worth naming in the log,
+# where a timeout is transient and needs no operator action — so the two are
+# reported differently even though both degrade the same way.
+_MISSING_COLLECTION_MARKERS = ("doesn't exist", "does not exist", "not found", "404")
+
+
+def _is_missing_collection_error(error: BaseException) -> bool:
+    """Best-effort check for "that collection is not there"."""
+    text = str(error).lower()
+    return any(marker in text for marker in _MISSING_COLLECTION_MARKERS)
+
+
+def _dense_search(
+    collection_name: str,
+    vector: list[float],
+    query_filter,
+    limit: int,
+) -> tuple[list[dict], bool]:
+    """
+    Run dense vector search, degrading to an empty list rather than raising.
+
+    ``_fuse_ranked_lists()`` was written to answer from BM25 and symbol
+    matching alone when dense search contributes nothing, and its docstring
+    names the missing-collection case explicitly. But a missing collection is
+    not an empty result — ``query_points()`` raises a 404 — so the exception
+    propagated out of ``retrieve()`` and the sparse retrievers below it never
+    ran. The sparse-only fallback added for #267 was unreachable for exactly
+    the situation it describes (#294).
+
+    The collection and the BM25 pickle are written at different points in
+    ``index_directory()`` and are not transactional, so they go out of step
+    routinely: ``create_collection()`` is skipped entirely under
+    ``--incremental`` when the collection already exists, a crash between the
+    upserts and the pickle write leaves either one ahead, and the collection
+    can be dropped by an operator or lost to a Qdrant restart on ephemeral
+    storage. Every one of those turned an answerable query into a 500.
+
+    Args:
+        collection_name: Qdrant collection to query.
+        vector: The encoded query vector.
+        query_filter: Optional Qdrant filter, or None.
+        limit: Maximum number of points to request.
+
+    Returns:
+        ``(chunks, ok)``. *ok* is False when dense search failed, which lets
+        the caller tell "nothing matched" apart from "retrieval was broken" —
+        both produce an empty context string otherwise.
+    """
+    try:
+        qdrant_result = client.query_points(
+            collection_name=collection_name,
+            query=vector,
+            query_filter=query_filter,
+            limit=limit,
+            score_threshold=QDRANT_SIMILARITY_THRESHOLD,
+        )
+    except Exception as error:
+        if _is_missing_collection_error(error):
+            logger.warning(
+                "Qdrant collection %r is missing - answering from sparse "
+                "retrieval only. Re-index this repository to restore vector "
+                "search.",
+                collection_name,
+            )
+        else:
+            logger.warning(
+                "Dense search against %r failed (%s: %s) - falling back to "
+                "sparse retrieval.",
+                collection_name,
+                type(error).__name__,
+                error,
+            )
+        return [], False
+
+    # qdrant_result may be an object with a .points attribute (Qdrant client) or
+    # a simple iterable. Normalize to an iterable of points for testability.
+    points_iterable = getattr(qdrant_result, "points", qdrant_result)
+
+    chunks = []
+    for idx, point in enumerate(points_iterable):
+        payload = getattr(point, "payload", None) or {}
+        chunks.append({
+            "_idx": f"v_{idx}",
+            "text": payload.get("text", ""),
+            "file": payload.get("file", "unknown"),
+            "repository": payload.get("repository", ""),
+            "start_line": payload.get("start_line", "?"),
+            "end_line": payload.get("end_line"),
+            "symbol_name": payload.get("symbol_name"),
+            "symbol_type": payload.get("symbol_type"),
+            "parent_class": payload.get("parent_class"),
+            "docstring": payload.get("docstring"),
+            "is_symbol": payload.get("is_symbol", False),
+            "score": getattr(point, "score", None),
+        })
+    return chunks, True
 
 
 def check_embedding_version(repo_id: str | None = None) -> None:
@@ -786,12 +1073,23 @@ def retrieve(
     """
     query, repo_id, context = _resolve_request_context(query, repo_id, context)
 
-    # Extract any inline metadata filters (e.g. file:main.py, type:function)
+    # Extract any inline metadata filters (e.g. file:main.py, type:function,
+    # repo:backend).
     query, inline_filters = extract_query_filters(query)
+    inline_repository = inline_filters.pop("repository", None)
+
+    # Copy rather than update in place: `metadata_filter` belongs to the
+    # caller, and a caller that builds one standing filter and reuses it
+    # across queries would otherwise accumulate every directive any user has
+    # ever typed, into every later query (issue #308).
+    #
+    # The explicit argument wins on a key conflict. A caller that passed a
+    # filter meant it; an inline directive must not be able to widen or
+    # redirect it.
     if inline_filters:
-        if metadata_filter is None:
-            metadata_filter = {}
-        metadata_filter.update(inline_filters)
+        merged = dict(inline_filters)
+        merged.update(metadata_filter or {})
+        metadata_filter = merged
 
     hook_registry.execute_pre_hooks("retrieval", {"query": query, "top_k": top_k, "repo_id": repo_id})
     if repo_id is not None:
@@ -812,30 +1110,19 @@ def retrieve(
     elif isinstance(repositories, list):
         repo_list = repositories
 
+    if inline_repository is not None and repo_list is None:
+        repo_list = [inline_repository]
+
     # ── Check Retrieval Cache ───────────────────────────────────────────
     cached_fused = retrieval_cache.get(query, repo_id=repo_id, filters=metadata_filter)
+    dense_ok = True
     if cached_fused is not None:
         fused = cached_fused[:top_k]
     else:
         # ── Dense vector search (Qdrant) ────────────────────────────────────
         vector = embedder.encode(query).tolist()
         query_limit = HYBRID_TOP_K if _get_bm25(repo_id) is not None else top_k
-        # Repo-isolated collections already scope results to one repository, and
-        # legacy payloads have no ``repository`` tag — so only apply the
-        # repository-name filter in shared-collection mode (repo_id is None).
         qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
-
-        qdrant_result = client.query_points(
-            collection_name=target_collection,
-            query=vector,
-            query_filter=qdrant_filter,
-            limit=query_limit,
-            score_threshold=QDRANT_SIMILARITY_THRESHOLD,
-        )
-
-        # qdrant_result may be an object with a .points attribute (Qdrant client) or
-        # a simple iterable. Normalize to an iterable of points for testability.
-        points_iterable = getattr(qdrant_result, "points", qdrant_result)
 
         # Expose the last query vector into builtins so older tests that reference
         # the name `vector` directly (unqualified) can still assert against it.
@@ -845,24 +1132,9 @@ def retrieve(
         except Exception:
             pass
 
-        vector_chunks = []
-        for idx, point in enumerate(points_iterable):
-            payload = point.payload or {}
-            repo_name = payload.get("repository", "")
-            vector_chunks.append({
-                "_idx": f"v_{idx}",
-                "text": payload.get("text", ""),
-                "file": payload.get("file", "unknown"),
-                "repository": repo_name,
-                "start_line": payload.get("start_line", "?"),
-                "end_line": payload.get("end_line"),
-                "symbol_name": payload.get("symbol_name"),
-                "symbol_type": payload.get("symbol_type"),
-                "parent_class": payload.get("parent_class"),
-                "docstring": payload.get("docstring"),
-                "is_symbol": payload.get("is_symbol", False),
-                "score": getattr(point, "score", None)
-            })
+        vector_chunks, dense_ok = _dense_search(
+            target_collection, vector, qdrant_filter, query_limit
+        )
 
         # ── Sparse keyword search (BM25) ────────────────────────────────────
         keyword_chunks = _keyword_search(query, HYBRID_TOP_K, metadata_filter=metadata_filter, repo_id=repo_id, repository_names=repo_list)
@@ -874,6 +1146,18 @@ def retrieve(
         # ── Fuse results ──────────────────────────────────────────────────────
         fused = _fuse_ranked_lists(vector_chunks, keyword_chunks, symbol_chunks, top_k)
         retrieval_cache.put(query, fused, repo_id=repo_id, filters=metadata_filter)
+
+    if not fused and not dense_ok:
+        # Every retriever came back empty *and* the dense one failed. That is
+        # a broken index, not a repository without an answer, and the two must
+        # not be reported identically — the LLM says "I could not find this in
+        # your codebase" either way, which is actively misleading when the
+        # real cause is a missing collection.
+        logger.error(
+            "Retrieval produced no results and dense search failed for "
+            "collection %r; the index is likely missing or unreachable.",
+            target_collection,
+        )
 
     # ── Format context for LLM ──────────────────────────────────────────
     structured_context = []

@@ -5,25 +5,42 @@ from logger import logger
 
 
 def can_handle(query: str) -> bool:
-    """Check if the query matches the explain function intent."""
+    """Check if the query matches the explain function, method, struct, or interface intent."""
     q = query.lower().strip()
-    return "explain this function" in q or "explain the function" in q or "explain function" in q
+    return any(
+        phrase in q
+        for phrase in (
+            "explain this function",
+            "explain the function",
+            "explain function",
+            "explain this method",
+            "explain the method",
+            "explain method",
+            "explain this struct",
+            "explain struct",
+            "explain this interface",
+            "explain interface",
+            "explain this class",
+            "explain class",
+        )
+    )
 
 
 def handle(query: str, session_id: str) -> str:
-    """Retrieve function context and explain it in a voice-friendly format."""
+    """Retrieve code symbol context and explain it in a voice-friendly format."""
     context = retrieve(query)
     if not context or not context.strip():
-        return "I could not find any relevant functions in your codebase to explain."
+        return "I could not find any relevant functions, methods, or structs in your codebase to explain."
 
     system_prompt = """
 You are DevWhisper, a codebase explanation assistant.
-The user has asked you to explain a function.
-Explain the function clearly and concisely in a voice-friendly manner (plain English, no markdown formatting like bold, italics, or bullet points).
-Describe what the function does, its inputs, and its outputs based strictly on the provided code context.
+The user has asked you to explain a code entity (function, method, struct, interface, or class).
+Explain the entity clearly and concisely in a voice-friendly manner (plain English, no markdown formatting like bold, italics, or bullet points).
+Describe what it does, its inputs/parameters, and its outputs/return values based strictly on the provided code context across Python, JS/TS, Go, Rust, and Java.
 Do not guess or assume details not present in the code.
 Keep your response short (under 4 sentences).
 """
+
 
     client = _get_client()
     model = _get_model()
