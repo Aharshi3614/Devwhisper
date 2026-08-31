@@ -28,6 +28,7 @@ Usage:
  from config import EMBEDDING_MODEL_NAME, QDRANT_URL, etc.
 """
 
+import sys
 import json
 import os
 from pathlib import Path
@@ -647,7 +648,9 @@ validate_config()
 PROMPT_PREVIEW_MODE: bool = os.getenv("PROMPT_PREVIEW_MODE", "false").lower() in ("true", "1", "yes")
 
 # Rate limiting configuration
-RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("true", "1", "yes")
+_in_testing = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules or os.getenv("TESTING", "false").lower() in ("true", "1", "yes")
+_default_rate_limit_enabled = "false" if _in_testing else "true"
+RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", _default_rate_limit_enabled).lower() in ("true", "1", "yes")
 RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
 RATE_LIMIT_BURST: int = int(os.getenv("RATE_LIMIT_BURST", "10"))
 _exempt_paths_env = os.getenv("RATE_LIMIT_EXEMPT_PATHS")

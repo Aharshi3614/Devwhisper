@@ -139,7 +139,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     ) -> None:
         super().__init__(app)
         self.rate_limiter = rate_limiter or default_rate_limiter
-        self.enabled = enabled if enabled is not None else config.RATE_LIMIT_ENABLED
+        self.enabled = enabled
         self.exempt_paths = (
             exempt_paths if exempt_paths is not None else config.RATE_LIMIT_EXEMPT_PATHS
         )
@@ -165,9 +165,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        # Check instance setting and runtime config flag
-        enabled_in_config = getattr(config, "RATE_LIMIT_ENABLED", True)
-        if not self.enabled or not enabled_in_config:
+        is_enabled = self.enabled if self.enabled is not None else getattr(config, "RATE_LIMIT_ENABLED", True)
+        if not is_enabled:
             return await call_next(request)
 
         path = request.url.path
