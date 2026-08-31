@@ -939,8 +939,18 @@ def index_directory(
         with open(target_cache, "w", encoding="utf-8") as f:
             json.dump(cache_data, f, indent=2, ensure_ascii=False)
 
+        # Drop cached answers and retrieval hits for this repository
+        try:
+            from retrieval_cache import retrieval_cache
+            from cache import invalidate_repo as cache_invalidate_repo
+            retrieval_cache.invalidate_repo(repo_id)
+            cache_invalidate_repo(repo_id)
+        except Exception:
+            pass
+
         skip_summary = f", {len(skipped_files)} file(s) skipped" if skipped_files else ""
         dep_msg = f", {dep_summary['total_unique_dependencies']} dependencies detected" if dep_summary["total_unique_dependencies"] > 0 else ""
+
         progress_state.update({
             "running": False,
             "percent": 100,
