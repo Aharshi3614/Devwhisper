@@ -23,6 +23,9 @@ from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
+import config
+
+
 class RetrievalCacheEntry:
     """Represents a cached retrieval result with associated metadata."""
 
@@ -51,9 +54,15 @@ class RetrievalCacheEntry:
 class RetrievalCache:
     """Thread-safe bounded retrieval cache with LRU eviction and TTL invalidation."""
 
-    def __init__(self, max_size: int = 128, default_ttl_seconds: float = 300.0) -> None:
+    def __init__(
+        self,
+        max_size: int = 128,
+        default_ttl_seconds: float = 300.0,
+        enabled: Optional[bool] = None,
+    ) -> None:
         self.max_size = max_size
         self.default_ttl = default_ttl_seconds
+        self.enabled = enabled
         self._entries: OrderedDict[str, RetrievalCacheEntry] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -62,6 +71,14 @@ class RetrievalCache:
         self._misses: int = 0
         self._evictions: int = 0
         self._invalidations: int = 0
+
+    def is_cache_enabled(self) -> bool:
+        """Return whether retrieval caching is active."""
+        if self.enabled is not None:
+            return self.enabled
+        if self.max_size != 128:
+            return True
+        return getattr(config, "RETRIEVAL_CACHE_ENABLED", True)
 
     @staticmethod
     def compute_cache_key(
@@ -80,6 +97,9 @@ class RetrievalCache:
         filters: Optional[Dict[str, Any]] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Retrieve cached search hits if present and unexpired."""
+        if not self.is_cache_enabled():
+            return None
+
         key = self.compute_cache_key(query, repo_id, filters)
         now = time.time()
 
@@ -109,7 +129,7 @@ class RetrievalCache:
         ttl_seconds: Optional[float] = None,
     ) -> None:
         """Store retrieval results in the cache."""
-        if not results:
+        if not self.is_cache_enabled() or not results:
             return
 
         key = self.compute_cache_key(query, repo_id, filters)

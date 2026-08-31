@@ -647,7 +647,7 @@ validate_config()
 
 PROMPT_PREVIEW_MODE: bool = os.getenv("PROMPT_PREVIEW_MODE", "false").lower() in ("true", "1", "yes")
 
-# Rate limiting configuration
+# Rate limiting and retrieval cache configuration
 _in_testing = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules or os.getenv("TESTING", "false").lower() in ("true", "1", "yes")
 _default_rate_limit_enabled = "false" if _in_testing else "true"
 RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", _default_rate_limit_enabled).lower() in ("true", "1", "yes")
@@ -658,6 +658,8 @@ if _exempt_paths_env:
     RATE_LIMIT_EXEMPT_PATHS: set[str] = set(p.strip() for p in _exempt_paths_env.split(",") if p.strip())
 else:
     RATE_LIMIT_EXEMPT_PATHS: set[str] = {"/health", "/", "/docs", "/openapi.json", "/redoc"}
+
+RETRIEVAL_CACHE_ENABLED: bool = os.getenv("RETRIEVAL_CACHE_ENABLED", "false" if _in_testing else "true").lower() in ("true", "1", "yes")
 
 __all__ = [
     "ConfigError",
@@ -700,5 +702,6 @@ __all__ = [
     "RATE_LIMIT_RPM",
     "RATE_LIMIT_BURST",
     "RATE_LIMIT_EXEMPT_PATHS",
+    "RETRIEVAL_CACHE_ENABLED",
     "validate_config",
 ]
