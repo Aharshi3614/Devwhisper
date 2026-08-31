@@ -42,6 +42,54 @@ _SYSTEM_PROMPT = SYSTEM_PROMPT
 _USER_INSTRUCTIONS = USER_INSTRUCTIONS
 
 
+# ---------------------------------------------------------------------------
+# Failure signalling
+# ---------------------------------------------------------------------------
+# The user-facing text is unchanged. What changed is that it is no longer the
+# *only* evidence that the call failed: an apology is a perfectly ordinary
+# non-empty string, so a caller that only checks `if answer.strip()` cannot
+# tell a real answer from a dead provider — and main.py used to cache the
+# apology on that basis (issue #293).
+LLM_ERROR_MESSAGE = "Sorry, I ran into an error while processing your request."
+
+
+class GenerationStatus:
+    """Out-of-band result channel for a generation call.
+
+    ``generate_response_stream()`` is a generator, so it cannot return a status
+    alongside the tokens it yields — and the tokens have to stay plain strings,
+    because the caller forwards them straight into an HTTP response body.
+    Passing a small mutable object in gives the caller something to inspect
+    once the stream has drained, without changing what is yielded.
+
+    Both generation functions accept one optionally, so every existing call
+    site keeps working untouched.
+
+    Attributes:
+        failed: True once the provider call raised.
+        error: The exception that caused the failure, for logging. Never
+            surfaced to the user — :data:`LLM_ERROR_MESSAGE` is.
+    """
+
+    __slots__ = ("failed", "error")
+
+    def __init__(self) -> None:
+        self.failed = False
+        self.error: BaseException | None = None
+
+    def fail(self, error: BaseException | None = None) -> None:
+        """Mark this generation as failed."""
+        self.failed = True
+        self.error = error
+
+    def __bool__(self) -> bool:
+        """True while the generation is still considered successful."""
+        return not self.failed
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"GenerationStatus(failed={self.failed!r}, error={self.error!r})"
+
+
 def _get_client() -> OpenAI:
     """
     Create an OpenAI-compatible client based on the configured provider.
@@ -117,10 +165,18 @@ def generate_response(
     context: str = "",
     history: str = "",
     req_context: RequestContext | None = None,
+    status: GenerationStatus | None = None,
 ) -> str:
     """
     Generate a complete (non-streaming) response for a user query.
+
     Supports RequestContext object passed via req_context or as first parameter.
+
+    Args:
+        status: Optional :class:`GenerationStatus`. Marked failed if the
+            provider call raises, so the caller can tell
+            :data:`LLM_ERROR_MESSAGE` apart from a genuine answer without
+            comparing strings. Callers that do not pass one behave as before.
     """
     if isinstance(user_query, RequestContext):
         req_context = user_query
@@ -168,13 +224,22 @@ def generate_response(
             return response.choices[0].message.content
 
         logger.error("Unexpected response: %s", response)
+        if status is not None:
+            status.fail()
         return "I could not process the response."
-    except Exception:
+    except Exception as exc:
         logger.error("LLM ERROR", exc_info=True)
-        return "Sorry, I ran into an error while processing your request."
+        if status is not None:
+            status.fail(exc)
+        return LLM_ERROR_MESSAGE
 
 
-def generate_response_stream(user_query: str, context: str, history: str = ""):
+def generate_response_stream(
+    user_query: str,
+    context: str,
+    history: str = "",
+    status: GenerationStatus | None = None,
+):
     """
     Generate a streaming response for a user query.
 
@@ -185,6 +250,10 @@ def generate_response_stream(user_query: str, context: str, history: str = ""):
         user_query: The user's natural language or code question.
         context: Retrieved code chunks from the codebase.
         history: Optional conversation history string.
+        status: Optional :class:`GenerationStatus`, marked failed if the
+            provider call raises. Read it *after* the generator has been
+            fully consumed — a generator body does not run until it is
+            iterated, so a status checked early always reads as successful.
 
     Yields:
         Individual text tokens (strings) from the LLM response.
@@ -216,7 +285,9 @@ def generate_response_stream(user_query: str, context: str, history: str = ""):
             "timestamp": time.time(),
         })
 
-    except Exception:
+    except Exception as exc:
         logger.error("LLM STREAM ERROR", exc_info=True)
-        yield "Sorry, I ran into an error while processing your request."
+        if status is not None:
+            status.fail(exc)
+        yield LLM_ERROR_MESSAGE
         

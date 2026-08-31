@@ -40,7 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata, \
     invalidate_bm25_cache
-from llm import generate_response, generate_response_stream
+from llm import generate_response, generate_response_stream, GenerationStatus
 from cache import get as cache_get, put as cache_put, invalidate_repo as cache_invalidate_repo
 from handlers import route_command
 from errors import error_response
@@ -423,6 +423,77 @@ def get_memory(session_id: str) -> str:
     return session_manager.get(session_id)
 
 
+def _persist_answer(
+    query: str,
+    session_id: str,
+    answer: str,
+    status: GenerationStatus,
+    context: str,
+) -> bool:
+    """
+    Store a completed answer in the cache and the session history.
+
+    Both streaming call sites used to end with the same four lines:
+
+        answer = "".join(full_response)
+        if answer and answer.strip():
+            cache_put(query, answer)
+            update_memory(session_id, query, answer)
+
+    "Non-empty" was the only test applied, and ``LLM_ERROR_MESSAGE`` is
+    non-empty — so a single expired API key or 429 pinned an apology into the
+    LRU. ``cache.get()`` then served it back for every query within
+    ``CACHE_SIMILARITY_THRESHOLD`` Jaccard distance, and promoted it to
+    most-recently-used on each hit, so it was the last entry to be evicted.
+    The outage outlived itself (issue #293).
+
+    ``cache.put()``'s docstring already said this was the caller's job:
+
+        Empty responses and failures should not be passed here; the caller is
+        responsible for only caching successful, non-empty answers.
+
+    Nothing enforced it. This does, in one place, for both call sites.
+
+    Args:
+        query: The user's question, used as the cache key.
+        session_id: Session whose history to append to.
+        answer: The full assembled answer, including the sources footer.
+        status: Generation status, already drained. A failed generation is
+            neither cached nor remembered.
+        context: The retrieved code context. Empty means retrieval found
+            nothing, so the answer is a "could not find this" placeholder
+            derived from no evidence — caching it would pin that verdict in
+            place across a re-index.
+
+    Returns:
+        True if the answer was persisted.
+    """
+    if status.failed:
+        # Not cached, and deliberately not written to history either: the
+        # apology would otherwise be replayed into the *prompt* of the next
+        # turn, showing the model its own error message as context.
+        logger.warning(
+            "Generation failed for session %s; answer not cached (%s)",
+            session_id,
+            type(status.error).__name__ if status.error else "no exception",
+        )
+        return False
+
+    if not answer or not answer.strip():
+        return False
+
+    if not context or not context.strip():
+        # Retrieval came back empty. Remember the exchange so the conversation
+        # still reads correctly, but do not cache a verdict reached without
+        # any evidence — re-indexing must be able to change the answer.
+        update_memory(session_id, query, answer)
+        return False
+
+    cache_put(query, answer)
+    update_memory(session_id, query, answer)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Public endpoints
 # ---------------------------------------------------------------------------
@@ -536,15 +607,19 @@ def _answer_query(query: str, session_id: str):
 
     _stage("generation")
 
+    status = GenerationStatus()
+
     def event_generator():
         full_response = []
-        for token in generate_response_stream(query, context, history):
+        for token in generate_response_stream(query, context, history, status=status):
             full_response.append(token)
             yield token
 
         _stage("post_processing")
 
-        if sources:
+        # A failed generation has no sources worth footnoting — the apology is
+        # not derived from the retrieved chunks.
+        if sources and not status.failed:
             sources_str = _sources_display(sources, confidences)
             yield sources_str
             full_response.append(sources_str)
@@ -552,10 +627,7 @@ def _answer_query(query: str, session_id: str):
         # Update cache and session history on complete stream
         _stage("cache_insertion")
 
-        answer = "".join(full_response)
-        if answer and answer.strip():
-            cache_put(query, answer)
-            update_memory(session_id, query, answer)
+        _persist_answer(query, session_id, "".join(full_response), status, context)
 
     return event_generator()
 
@@ -828,22 +900,25 @@ async def stream_query(request: Request):
     context, sources, confidences = retrieve(query, include_sources=True, repo_id=repositories.get_current_repo_id(), repositories=repositories.get_current_repo_name())
     history = get_memory(session_id)
 
+    status = GenerationStatus()
+
     def event_generator():
         full_response = []
-        for token in generate_response_stream(query, context, history):
+        for token in generate_response_stream(
+            query, context, history, status=status
+        ):
             full_response.append(token)
             yield token
 
-        if sources:
+        if sources and not status.failed:
             sources_str = _sources_display(sources, confidences)
             yield sources_str
             full_response.append(sources_str)
 
         # Update cache and session history on complete stream
-        answer = "".join(full_response)
-        if answer and answer.strip():
-            cache_put(query, answer)
-            update_memory(session_id, query, answer)
+        _persist_answer(
+            query, session_id, "".join(full_response), status, context
+        )
 
     return StreamingResponse(event_generator(), media_type="text/plain")
 
