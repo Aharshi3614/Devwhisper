@@ -41,7 +41,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from retriever import retrieve, embedder, client as qdrant_client, get_repository_metadata, \
     invalidate_bm25_cache
 from llm import generate_response, generate_response_stream, GenerationStatus
-from cache import get as cache_get, put as cache_put, invalidate_repo as cache_invalidate_repo
+from cache import (
+    get as cache_get,
+    put as cache_put,
+    invalidate_repo as cache_invalidate_repo,
+    clear as cache_clear,
+    get_stats as cache_get_stats,
+)
 from handlers import route_command
 from errors import error_response
 from pipeline_validator import PipelineTracker, PipelineStageError
@@ -1568,5 +1574,26 @@ def _sources_display(sources: list[str], confidences: dict[str, int]):
         else:
             parts.append(f"`{s}` ({conf}%)")
     return "\n\n**Sources used:** " + ", ".join(parts)
+
+
+@app.get("/cache/stats")
+def get_cache_statistics():
+    """Retrieve runtime memory and hit/miss statistics for answer and retrieval caches."""
+    return cache_get_stats()
+
+
+@app.post("/cache/clear")
+def clear_all_caches():
+    """Purge all cached answers and retrieval hits across all repositories."""
+    from retrieval_cache import retrieval_cache
+
+    answers_removed = cache_clear()
+    retrieval_cache.clear()
+    return {
+        "status": "ok",
+        "message": "All caches cleared successfully",
+        "answers_cleared": answers_removed,
+    }
+
 
 
