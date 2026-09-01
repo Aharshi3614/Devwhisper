@@ -33,6 +33,7 @@ import uuid
 import sys
 import json
 import time
+import threading
 from datetime import datetime, timezone
 
 from pathspec import PathSpec
@@ -669,7 +670,12 @@ def upload_vectors(
     return total_uploaded
 
 
-def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = False) -> dict | None:  # noqa: C901
+def index_directory(
+    directory: str,
+    repo_id: str | None = None,
+    dry_run: bool = False,
+    cancellation_event: threading.Event | None = None,
+) -> dict | None:  # noqa: C901
     """
     Main indexing pipeline: scan, chunk, embed, and store codebase into Qdrant + BM25.
 
@@ -765,6 +771,15 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
 
         # ── Process each file ────────────────────────────────────────────
         for idx, path in enumerate(all_files, start=1):
+            if cancellation_event and cancellation_event.is_set():
+                logger.info("Indexing cancelled for repository %s", repo_id)
+                progress_state.update({
+                    "running": False,
+                    "status": "cancelled",
+                    "message": "Indexing cancelled by user.",
+                })
+                return None
+
             file = os.path.basename(path)
             python_import.update(parse_import(path, file))
             progress_state.update({
@@ -773,6 +788,7 @@ def index_directory(directory: str, repo_id: str | None = None, dry_run: bool = 
                 "current_file": file,
                 "message": f"Indexing {file} ({idx}/{total_files})",
             })
+
 
             cache_data[path] = {
                 "mtime": os.path.getmtime(path),

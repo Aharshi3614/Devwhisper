@@ -54,6 +54,18 @@ from pipeline_validator import PipelineTracker, PipelineStageError
 from indexer import index_directory, progress_state, get_before_cache_data, collect_indexable_files, \
     load_gitignore_rules, get_file_hash, is_cache_unchanged
 from session_manager import SessionManager
+from indexing_job_manager import job_manager, JobStatus
+from rate_limiter import RateLimitMiddleware
+from archive_safety import (
+    stream_to_file,
+    inspect_archive,
+    validate_archive_limits,
+    is_safe_member,
+    safe_extract_all,
+    sweep_orphan_uploads,
+    ArchiveTooLarge,
+    UnsafeArchiveMember,
+)
 from config import (
     SAMPLE_CODEBASE_DIRECTORY,
     QDRANT_COLLECTION_NAME,
@@ -62,15 +74,7 @@ from config import (
     MAX_ARCHIVE_ENTRIES,
     MAX_COMPRESSION_RATIO,
 )
-from rate_limiter import RateLimitMiddleware
-from archive_safety import (
-    ArchiveTooLarge,
-    UnsafeArchiveMember,
-    safe_extract_all,
-    stream_to_file,
-    sweep_orphan_uploads,
-    validate_archive_limits,
-)
+
 import repositories
 import contextvars
 import logging
@@ -261,6 +265,11 @@ def queue_worker():
             job["status"] = "running"
             job["started_at"] = time.time()
             job["message"] = f"Indexing {job['name']}..."
+            job_inst = job.get("job_instance")
+            if job_inst:
+                job_inst.status = JobStatus.RUNNING
+                job_inst.started_at = time.time()
+                job_inst.message = f"Indexing {job['name']}..."
 
             progress_state.update({
                 "running": True,
@@ -316,23 +325,42 @@ def queue_worker():
                     directory = repositories.get_repo_path(job.get("repo_id")) or SAMPLE_CODEBASE_DIRECTORY
 
                 # Run the actual indexing pipeline
-                index_directory(directory, repo_id=job.get("repo_id"), dry_run=job.get("dry_run", False))
+                canc_event = job_inst._cancellation_event if job_inst else None
+                index_kwargs = {
+                    "repo_id": job.get("repo_id"),
+                    "dry_run": job.get("dry_run", False),
+                }
+                if canc_event is not None:
+                    index_kwargs["cancellation_event"] = canc_event
+                index_directory(directory, **index_kwargs)
 
-                job["status"] = "completed"
-                job["percent"] = 100
-                job["message"] = "Indexing completed successfully."
+                if job_inst and job_inst.is_cancelled():
+                    job["status"] = "cancelled"
+                    job["message"] = "Job was cancelled."
+                else:
+                    job["status"] = "completed"
+                    job["percent"] = 100
+                    job["message"] = "Indexing completed successfully."
+                    if job_inst:
+                        job_inst.status = JobStatus.COMPLETED
+                        job_inst.percent = 100
+                        job_inst.message = "Indexing completed successfully."
 
                 progress_state.update({
                     "running": False,
-                    "status": "done",
-                    "percent": 100,
-                    "message": "Indexing completed successfully.",
+                    "status": "done" if not (job_inst and job_inst.is_cancelled()) else "cancelled",
+                    "percent": 100 if not (job_inst and job_inst.is_cancelled()) else progress_state.get("percent", 0),
+                    "message": job["message"],
                 })
             except Exception as e:
                 logger.error("Job %s failed: %s", job_id, e)
                 job["status"] = "failed"
                 job["error"] = str(e)
                 job["message"] = f"Failed: {e}"
+                if job_inst:
+                    job_inst.status = JobStatus.FAILED
+                    job_inst.error = str(e)
+                    job_inst.message = f"Failed: {e}"
 
                 progress_state.update({
                     "running": False,
@@ -340,7 +368,11 @@ def queue_worker():
                     "message": f"Indexing failed: {e}",
                 })
             finally:
-                job["finished_at"] = time.time()
+                now_time = time.time()
+                job["finished_at"] = now_time
+                if job_inst and not job_inst.finished_at:
+                    job_inst.finished_at = now_time
+
 
                 # A dry run uploads no vectors and rewrites no index, so its
                 # only effect here would be to throw away a warm cache for
@@ -1574,6 +1606,63 @@ def _sources_display(sources: list[str], confidences: dict[str, int]):
         else:
             parts.append(f"`{s}` ({conf}%)")
     return "\n\n**Sources used:** " + ", ".join(parts)
+
+
+@app.post("/index/jobs/start")
+def start_managed_indexing_job(payload: dict | None = None):
+    """Start an asynchronous indexing job with job manager tracking."""
+    payload = payload or {}
+    repo_id = payload.get("repo_id") or repositories.get_current_repo_id() or "default"
+    dry_run = bool(payload.get("dry_run", False))
+
+    active = job_manager.get_active_job_for_repo(repo_id)
+    if active:
+        return {
+            "status": "already_running",
+            "message": f"An active indexing job ({active.id}) is already in progress for repo {repo_id}",
+            "job": active.to_dict(),
+        }
+
+    job = job_manager.create_job(repo_id=repo_id, is_dry_run=dry_run)
+    queue_job = {
+        "id": job.id,
+        "type": "reindex",
+        "name": f"Index: {repo_id}",
+        "repo_id": repo_id,
+        "dry_run": dry_run,
+        "job_instance": job,
+    }
+    jobs_history.append(queue_job)
+    indexing_queue.put(queue_job)
+    return {"status": "queued", "job": job.to_dict()}
+
+
+@app.get("/index/jobs")
+def list_indexing_jobs(limit: int = 50):
+    """List recent indexing jobs managed by the job manager."""
+    return {"jobs": job_manager.list_jobs(limit=limit)}
+
+
+@app.get("/index/jobs/{job_id}")
+def get_indexing_job_status(job_id: str):
+    """Get status of a specific indexing job."""
+    job = job_manager.get_job(job_id)
+    if not job:
+        return error_response(404, f"Indexing job {job_id} not found")
+    return {"job": job.to_dict()}
+
+
+@app.post("/index/jobs/{job_id}/cancel")
+def cancel_indexing_job(job_id: str):
+    """Cancel a pending or running indexing job."""
+    success = job_manager.cancel_job(job_id)
+    job = job_manager.get_job(job_id)
+    if not job:
+        return error_response(404, f"Indexing job {job_id} not found")
+    return {
+        "status": "cancelled" if success else "already_terminated",
+        "job": job.to_dict(),
+    }
 
 
 @app.get("/cache/stats")
