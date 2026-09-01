@@ -56,8 +56,19 @@ def error_response(status_code: int, detail: str) -> JSONResponse:
 
 def safe_execute(error_message: str = "An unexpected error occurred", default_return=None):
     """
-    Standardized execution decorator to unify error handling and control flow 
+    Standardized execution decorator to unify error handling and control flow
     across backend processing modules.
+
+    Args:
+        error_message: Caller-supplied context describing what was being
+            attempted. It is included in the log entry when the wrapped
+            function raises, so failures carry meaningful context rather than
+            only the raw exception text.
+        default_return: Value returned when the wrapped function raises.
+
+    Returns:
+        A decorator that wraps a function, logging any exception (with the
+        supplied ``error_message`` for context) and returning ``default_return``.
     """
     def decorator(func):
         @wraps(func)
@@ -65,7 +76,13 @@ def safe_execute(error_message: str = "An unexpected error occurred", default_re
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                logger.error("Error in %s: %s", func.__name__, e, exc_info=True)
+                logger.error(
+                    "%s in %s: %s",
+                    error_message,
+                    func.__name__,
+                    e,
+                    exc_info=True,
+                )
                 return default_return
         return wrapper
     return decorator
