@@ -59,6 +59,8 @@ from config import (
 )
 from logger import logger
 from symbol_parser import extract_symbols_from_file
+from language_detector import detect_language
+from index_validator import validate_index
 
 import repositories
 
@@ -313,6 +315,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
         lines = file_handle.readlines()
 
     chunks = []
+    lang = detect_language(filepath)
     step = chunk_size - INDEX_CHUNK_OVERLAP
     for index in range(0, len(lines), step):
         chunk = "".join(lines[index:index + chunk_size])
@@ -323,6 +326,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
                     "file": os.path.basename(filepath),
                     "start_line": index + 1,
                     "is_symbol": False,
+                    "language": lang,
                 }
             )
     return chunks
@@ -562,9 +566,11 @@ def generate_chunks(files: list[str]) -> tuple[list[dict], dict[str, dict], dict
         file = os.path.basename(path)
         python_import.update(parse_import(path, file))
 
+        lang = detect_language(path)
         cache_entry = {
             "mtime": os.path.getmtime(path),
             "hash": get_file_hash(path),
+            "language": lang,
         }
 
         chunks = get_file_chunks(path)
@@ -948,6 +954,22 @@ def index_directory(
             cache_invalidate_repo(repo_id)
         except Exception:
             pass
+
+        # ── Post-index validation (Issue #139) ──────────────────────────
+        try:
+            validation_report = validate_index(
+                cache_path=target_cache,
+                bm25_path=target_bm25,
+                collection_name=target_collection,
+            )
+            progress_state["validation_report"] = validation_report
+            if not validation_report["valid"]:
+                logger.warning(
+                    "Index validation found %d issue(s)",
+                    len(validation_report["errors"]),
+                )
+        except Exception as exc:
+            logger.warning("Index validation failed: %s", exc)
 
         skip_summary = f", {len(skipped_files)} file(s) skipped" if skipped_files else ""
         dep_msg = f", {dep_summary['total_unique_dependencies']} dependencies detected" if dep_summary["total_unique_dependencies"] > 0 else ""
