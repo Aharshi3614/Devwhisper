@@ -59,6 +59,7 @@ from config import (
 )
 from logger import logger
 from symbol_parser import extract_symbols_from_file
+from language_detector import detect_language
 
 import repositories
 
@@ -313,6 +314,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
         lines = file_handle.readlines()
 
     chunks = []
+    lang = detect_language(filepath)
     step = chunk_size - INDEX_CHUNK_OVERLAP
     for index in range(0, len(lines), step):
         chunk = "".join(lines[index:index + chunk_size])
@@ -323,6 +325,7 @@ def chunk_file(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[dict]:
                     "file": os.path.basename(filepath),
                     "start_line": index + 1,
                     "is_symbol": False,
+                    "language": lang,
                 }
             )
     return chunks
@@ -562,9 +565,11 @@ def generate_chunks(files: list[str]) -> tuple[list[dict], dict[str, dict], dict
         file = os.path.basename(path)
         python_import.update(parse_import(path, file))
 
+        lang = detect_language(path)
         cache_entry = {
             "mtime": os.path.getmtime(path),
             "hash": get_file_hash(path),
+            "language": lang,
         }
 
         chunks = get_file_chunks(path)
