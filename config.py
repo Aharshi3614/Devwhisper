@@ -412,7 +412,7 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
     )
 
 SUPPORTED_EXTENSIONS: Final = frozenset(
-    {".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java"}
+    {".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"}
 )
 """File extensions eligible for indexing."""
 
