@@ -60,6 +60,7 @@ from config import (
 from logger import logger
 from symbol_parser import extract_symbols_from_file
 from language_detector import detect_language
+from index_validator import validate_index
 
 import repositories
 
@@ -953,6 +954,22 @@ def index_directory(
             cache_invalidate_repo(repo_id)
         except Exception:
             pass
+
+        # ── Post-index validation (Issue #139) ──────────────────────────
+        try:
+            validation_report = validate_index(
+                cache_path=target_cache,
+                bm25_path=target_bm25,
+                collection_name=target_collection,
+            )
+            progress_state["validation_report"] = validation_report
+            if not validation_report["valid"]:
+                logger.warning(
+                    "Index validation found %d issue(s)",
+                    len(validation_report["errors"]),
+                )
+        except Exception as exc:
+            logger.warning("Index validation failed: %s", exc)
 
         skip_summary = f", {len(skipped_files)} file(s) skipped" if skipped_files else ""
         dep_msg = f", {dep_summary['total_unique_dependencies']} dependencies detected" if dep_summary["total_unique_dependencies"] > 0 else ""
