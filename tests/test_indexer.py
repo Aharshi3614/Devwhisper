@@ -3,7 +3,12 @@
 import os
 import tempfile
 
-from config import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB
+from config import (
+    MAX_FILE_SIZE_BYTES,
+    MAX_FILE_SIZE_MB,
+    SUPPORTED_EXTENSIONS,
+    SYMBOL_EXTENSIONS,
+)
 from indexer import (
     chunk_file,
     collect_indexable_files,
@@ -15,6 +20,13 @@ from indexer import (
 def test_supported_extensions_includes_markdown():
     """.md files must be in the supported extensions set."""
     assert ".md" in SUPPORTED_EXTENSIONS
+
+
+def test_supported_extensions_includes_symbol_extensions():
+    """All symbol extensions must be in the supported extensions set."""
+    assert SYMBOL_EXTENSIONS.issubset(SUPPORTED_EXTENSIONS)
+    for ext in (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs"):
+        assert ext in SUPPORTED_EXTENSIONS
 
 
 def test_chunk_file_handles_markdown_content():

@@ -55,6 +55,7 @@ from config import (
     QDRANT_URL,
     SAMPLE_CODEBASE_DIRECTORY,
     SUPPORTED_EXTENSIONS,
+    SYMBOL_EXTENSIONS,
     BM25_INDEX_PATH,
 )
 from logger import logger
@@ -419,7 +420,7 @@ def get_file_chunks(filepath: str, chunk_size: int = INDEX_CHUNK_SIZE) -> list[d
     Other file types retain the existing overlapping line-based strategy.
     """
     ext = os.path.splitext(filepath)[1].lower()
-    if ext not in (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".go", ".rs", ".java"):
+    if ext not in SYMBOL_EXTENSIONS:
         return chunk_file(filepath, chunk_size=chunk_size)
 
     if chunk_size <= INDEX_CHUNK_OVERLAP:

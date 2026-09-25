@@ -155,7 +155,7 @@ During indexing, DevWhisper scans the codebase and filters files based on extens
 
 | Reason | When it applies | `detail` field |
 | --- | --- | --- |
-| `unsupported_extension` | File extension is not in `SUPPORTED_EXTENSIONS` (`.py`, `.md`) | The actual extension (e.g., `.txt`, `.png`) |
+| `unsupported_extension` | File extension is not in `SUPPORTED_EXTENSIONS` | The actual extension (e.g., `.txt`, `.png`) |
 | `oversized` | File exceeds `MAX_FILE_SIZE_MB` (default 1 MB) | e.g., `"2.50 MB exceeds 1.00 MB limit"` |
 | `gitignored` | File matches a `.gitignore` rule | `"matched by .gitignore rule"` |
 | `unreadable` | `os.path.getsize()` raised an `OSError` (permissions, broken symlink) | The OS error message |
@@ -277,7 +277,7 @@ The endpoint merges the live in-memory progress_state (for runs that are current
 Edit `SUPPORTED_EXTENSIONS` in `config.py`:
 
 ```python
-SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md", ".txt"})
+SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".go", ".rs", ".java"})
 
 ```
 
