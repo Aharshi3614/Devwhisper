@@ -411,8 +411,14 @@ if INDEX_CHUNK_SIZE <= INDEX_CHUNK_OVERLAP:
         ),
     )
 
+# Extensions with language-aware symbol extraction.
+SYMBOL_EXTENSIONS: Final = frozenset(
+    {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".go", ".rs", ".java"}
+)
+"""Source extensions supported by the symbol extractor."""
+
 SUPPORTED_EXTENSIONS: Final = frozenset(
-    {".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java"}
+    {".md", *SYMBOL_EXTENSIONS}
 )
 """File extensions eligible for indexing."""
 
@@ -681,6 +687,7 @@ __all__ = [
     "INDEX_CHUNK_SIZE",
     "INDEX_CHUNK_OVERLAP",
     "SUPPORTED_EXTENSIONS",
+    "SYMBOL_EXTENSIONS",
     "SAMPLE_CODEBASE_DIRECTORY",
     "MAX_FILE_SIZE_MB",
     "MAX_FILE_SIZE_BYTES",

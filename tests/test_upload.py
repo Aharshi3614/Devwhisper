@@ -78,7 +78,7 @@ def test_upload_rejects_path_traversal(client):
 
 
 def test_upload_rejects_no_supported_files(client):
-    """ZIP must contain at least one supported file extension (.py, .md)."""
+    """ZIP must contain at least one configured supported file extension."""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zip_file:
         zip_file.writestr("readme.txt", "unsupported text file content")
@@ -89,7 +89,25 @@ def test_upload_rejects_no_supported_files(client):
         files={"file": ("unsupported.zip", zip_buffer.read(), "application/zip")}
     )
     assert response.status_code == 400
-    assert "No supported files (.py, .md) found in the uploaded ZIP archive" in response.json()["message"]
+    assert "No supported files (" in response.json()["message"]
+    assert ".js" in response.json()["message"]
+    assert ".md" in response.json()["message"]
+
+
+def test_upload_accepts_javascript_file(client):
+    """ZIP validation should use the shared supported-extension allowlist."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+        zip_file.writestr("src/app.js", "export function hello() { return 1; }")
+
+    zip_buffer.seek(0)
+    response = client.post(
+        "/index/upload",
+        files={"file": ("javascript-project.zip", zip_buffer.read(), "application/zip")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "started"
 
 
 def test_upload_success_starts_indexing(client):
