@@ -73,6 +73,7 @@ from config import (
     MAX_EXTRACTED_SIZE_BYTES,
     MAX_ARCHIVE_ENTRIES,
     MAX_COMPRESSION_RATIO,
+    SUPPORTED_EXTENSIONS,
 )
 
 import repositories
@@ -1154,17 +1155,19 @@ async def upload_codebase(file: UploadFile = File(...)):
         _remove_temp_upload(temp_zip_path)
         return error_response(400, f"Path traversal detected in ZIP: {invalid_member}")
 
-    # Validate that ZIP contains supported files (.py, .md) synchronously
+    # Validate that ZIP contains supported files synchronously
     has_supported_file = False
+    supported_exts_tuple = tuple(SUPPORTED_EXTENSIONS)
     with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
         for member in zip_ref.namelist():
-            if not member.endswith("/") and member.lower().endswith((".py", ".md")):
+            if not member.endswith("/") and any(member.lower().endswith(ext) for ext in supported_exts_tuple):
                 has_supported_file = True
                 break
 
     if not has_supported_file:
         _remove_temp_upload(temp_zip_path)
-        return error_response(400, "No supported files (.py, .md) found in the uploaded ZIP archive.")
+        supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        return error_response(400, f"No supported files ({supported_list}) found in the uploaded ZIP archive.")
 
     # Queue the job
     job = {

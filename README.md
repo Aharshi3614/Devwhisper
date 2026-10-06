@@ -155,7 +155,7 @@ During indexing, DevWhisper scans the codebase and filters files based on extens
 
 | Reason | When it applies | `detail` field |
 | --- | --- | --- |
-| `unsupported_extension` | File extension is not in `SUPPORTED_EXTENSIONS` (`.py`, `.md`) | The actual extension (e.g., `.txt`, `.png`) |
+| `unsupported_extension` | File extension is not in `SUPPORTED_EXTENSIONS` (`.py`, `.md`, `.js`, `.jsx`, `.ts`, `.tsx`, `.go`, `.rs`, `.java`) | The actual extension (e.g., `.txt`, `.png`) |
 | `oversized` | File exceeds `MAX_FILE_SIZE_MB` (default 1 MB) | e.g., `"2.50 MB exceeds 1.00 MB limit"` |
 | `gitignored` | File matches a `.gitignore` rule | `"matched by .gitignore rule"` |
 | `unreadable` | `os.path.getsize()` raised an `OSError` (permissions, broken symlink) | The OS error message |
@@ -272,13 +272,22 @@ Detailed skip reasons from the latest run.
 The endpoint merges the live in-memory progress_state (for runs that are currently active) with the persisted _metadata block from .index_cache.json (for the most recent completed run), so it always reflects the freshest available data. It never raises—before the first index run it returns zero counts and null duration/timestamp so the frontend can render an empty state.
 ---
 
-## Adding Support for a New File Type
+## Supported File Types
 
-Edit `SUPPORTED_EXTENSIONS` in `config.py`:
+DevWhisper currently supports indexing and parsing the following file types:
+
+- **Python**: `.py`
+- **Markdown**: `.md`
+- **JavaScript**: `.js`, `.jsx`, `.mjs`
+- **TypeScript**: `.ts`, `.tsx`
+- **Go**: `.go`
+- **Rust**: `.rs`
+- **Java**: `.java`
+
+To add support for a new file type, edit `SUPPORTED_EXTENSIONS` in `config.py`:
 
 ```python
-SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md", ".txt"})
-
+SUPPORTED_EXTENSIONS: Final = frozenset({".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".txt"})
 ```
 
 *After updating this configuration, re-index the project so files with the new extension are processed.*
