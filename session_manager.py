@@ -30,7 +30,7 @@ class SessionManager:
         self.max_history_per_session = max_history_per_session
         self._clock = clock
         self.sessions: OrderedDict[str, SessionData] = OrderedDict()
-        self.lock = RLock()
+        self.lock = RLock()  # Thread-safe lock to prevent race conditions during concurrent ASGI requests
 
     def update(self, session_id: str, user: str, assistant: str) -> None:
         """Append an exchange and promote the session to most recently used."""
