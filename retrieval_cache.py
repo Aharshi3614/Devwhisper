@@ -82,12 +82,15 @@ class RetrievalCache:
 
     @staticmethod
     def compute_cache_key(
-        query: str, repo_id: Optional[str] = None, filters: Optional[Dict[str, Any]] = None
+        query: str,
+        repo_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        top_k: Optional[int] = None,
     ) -> str:
-        """Compute a deterministic hash key for query + repo + filters."""
+        """Compute a deterministic hash key for query + repo + filters + top_k."""
         normalized_query = " ".join(query.strip().lower().split())
         filters_str = json.dumps(filters or {}, sort_keys=True)
-        raw_key = f"{repo_id or 'default'}:{normalized_query}:{filters_str}"
+        raw_key = f"{repo_id or 'default'}:{normalized_query}:{filters_str}:{top_k if top_k is not None else ''}"
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
     def get(
@@ -95,12 +98,13 @@ class RetrievalCache:
         query: str,
         repo_id: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
+        top_k: Optional[int] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Retrieve cached search hits if present and unexpired."""
         if not self.is_cache_enabled():
             return None
 
-        key = self.compute_cache_key(query, repo_id, filters)
+        key = self.compute_cache_key(query, repo_id, filters, top_k)
         now = time.time()
 
         with self._lock:
@@ -127,12 +131,13 @@ class RetrievalCache:
         repo_id: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         ttl_seconds: Optional[float] = None,
+        top_k: Optional[int] = None,
     ) -> None:
         """Store retrieval results in the cache."""
         if not self.is_cache_enabled() or not results:
             return
 
-        key = self.compute_cache_key(query, repo_id, filters)
+        key = self.compute_cache_key(query, repo_id, filters, top_k)
         ttl = ttl_seconds if ttl_seconds is not None else self.default_ttl
 
         # Extract file paths from chunk payloads for fine-grained invalidation
