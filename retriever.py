@@ -681,7 +681,10 @@ def _exact_symbol_search(
         if not _passes_filters(chunk, metadata_filter, repository_names):
             continue
 
-        text_lower = chunk["text"].lower()
+        text_value = chunk.get("text") or ""
+        if not text_value.strip():
+            continue
+        text_lower = text_value.lower()
         count = sum(len(pattern.findall(text_lower)) for pattern in symbol_patterns)
         if count > 0:
             result = chunk.copy()
