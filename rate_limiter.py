@@ -79,11 +79,16 @@ class RateLimiter:
         rpm: Optional[int] = None,
         burst: Optional[int] = None,
         ttl_seconds: float = 3600.0,
+        max_buckets: int = 10000,
+        cleanup_interval: float = 5.0,
     ) -> None:
         self.rpm = rpm if rpm is not None else config.RATE_LIMIT_RPM
         self.burst = burst if burst is not None else config.RATE_LIMIT_BURST
         self.refill_rate = self.rpm / 60.0
         self.ttl_seconds = ttl_seconds
+        self.max_buckets = max_buckets
+        self.cleanup_interval = cleanup_interval
+        self._last_cleanup = 0.0
         self.buckets: Dict[str, TokenBucket] = {}
         self.last_accessed: Dict[str, float] = {}
         self.lock = threading.Lock()
@@ -102,9 +107,18 @@ class RateLimiter:
         """Retrieve or create a TokenBucket for the given client IP address."""
         with self.lock:
             now = time.monotonic()
-            self._cleanup_stale_buckets(now)
+            if (
+                len(self.last_accessed) < 1000
+                or now - self._last_cleanup >= self.cleanup_interval
+            ):
+                self._cleanup_stale_buckets(now)
+                self._last_cleanup = now
 
             if client_ip not in self.buckets:
+                if len(self.buckets) >= self.max_buckets:
+                    oldest = min(self.last_accessed, key=self.last_accessed.get)
+                    self.buckets.pop(oldest, None)
+                    self.last_accessed.pop(oldest, None)
                 self.buckets[client_ip] = TokenBucket(
                     capacity=self.burst,
                     refill_rate=self.refill_rate,
@@ -154,10 +168,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return False
 
     def get_client_ip(self, request: Request) -> str:
-        """Extract client IP address from request headers or connection client."""
+        """Extract client IP address from request headers or connection client.
+
+        X-Forwarded-For is only honored when it holds a plausible IP value;
+        otherwise the direct connection address is used. Deployments behind
+        a proxy that strips the header should rely on request.client.
+        """
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            candidate = forwarded.split(",")[0].strip()
+            if candidate and len(candidate) <= 45 and all(
+                ch.isalnum() or ch in ".:_" for ch in candidate
+            ):
+                return candidate
         if request.client and request.client.host:
             return request.client.host
         return "127.0.0.1"
