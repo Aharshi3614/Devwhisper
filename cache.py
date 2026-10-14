@@ -55,6 +55,15 @@ Deliberately a global bound rather than a per-repository one: the memory
 ceiling should not grow with the number of registered repositories.
 """
 
+MAX_CACHED_RESPONSE_CHARS = 20000
+"""Maximum response length admitted to the cache.
+
+Count limiting alone cannot bound bytes when values vary from short
+acknowledgements to long debugging answers with code blocks. Oversized
+answers are still returned to the caller, they are just not pinned for
+reuse.
+"""
+
 # ---------------------------------------------------------------------------
 # Internal storage (protected by the lock below)
 # ---------------------------------------------------------------------------
@@ -229,6 +238,9 @@ def put(query: str, response: str) -> None:
         if capacity is exceeded.
     """
     if not response or not response.strip():
+        return
+
+    if len(response) > MAX_CACHED_RESPONSE_CHARS:
         return
 
     key = (_current_scope(), _normalize(query))
