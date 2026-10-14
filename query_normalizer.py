@@ -55,8 +55,10 @@ class QueryNormalizer:
     }
 
     #: Built from DIRECTIVE_FIELDS rather than restated, for the reason above.
+    #: The file directive accepts nested paths, so slashes belong in the
+    #: value class. Other directives keep working as before.
     DIRECTIVE_PATTERN = (
-        r'\b(' + "|".join(DIRECTIVE_FIELDS) + r'):([a-zA-Z0-9_.\-]+)\b'
+        r'\b(' + "|".join(DIRECTIVE_FIELDS) + r'):([a-zA-Z0-9_.\-/\\]+)\b'
     )
 
     def extract_filters(self, query: str) -> tuple[str, dict[str, str]]:
