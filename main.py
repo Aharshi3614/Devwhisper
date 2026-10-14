@@ -1088,7 +1088,8 @@ async def upload_codebase(file: UploadFile = File(...)):
     """
     Accept a ZIP archive of a local codebase, queue it, extract it, and automatically index it sequentially.
     """
-    if not file.filename.endswith(".zip"):
+    filename = file.filename or ""
+    if not filename.lower().endswith(".zip"):
         return error_response(400, "Only ZIP archives are supported.")
 
     job_id = str(uuid.uuid4())
