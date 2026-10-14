@@ -77,6 +77,7 @@ from config import (
 
 import repositories
 import contextvars
+import hmac
 import logging
 import queue
 import uuid
@@ -972,7 +973,7 @@ def _require_admin(x_admin_secret: str | None) -> None:
     """
     Validate the X-Admin-Secret header against the server's ADMIN_SECRET.
 
-    Uses a direct equality comparison. Raises 401 on any mismatch (including
+    Uses a constant-time comparison. Raises 401 on any mismatch (including
     missing header or unset server secret) so the endpoint never leaks session
     data by accident.
 
@@ -985,7 +986,7 @@ def _require_admin(x_admin_secret: str | None) -> None:
     if not ADMIN_SECRET:
         # Fail closed if the operator forgot to set ADMIN_SECRET.
         raise HTTPException(status_code=401, detail="Admin secret not configured on server")
-    if not x_admin_secret or x_admin_secret != ADMIN_SECRET:
+    if not x_admin_secret or not hmac.compare_digest(x_admin_secret, ADMIN_SECRET):
         raise HTTPException(status_code=401, detail="Invalid or missing admin secret")
 
 
