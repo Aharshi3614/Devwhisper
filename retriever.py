@@ -1114,7 +1114,7 @@ def retrieve(
         repo_list = [inline_repository]
 
     # ── Check Retrieval Cache ───────────────────────────────────────────
-    cached_fused = retrieval_cache.get(query, repo_id=repo_id, filters=metadata_filter)
+    cached_fused = retrieval_cache.get(query, repo_id=repo_id, filters=metadata_filter, top_k=top_k)
     dense_ok = True
     if cached_fused is not None:
         fused = cached_fused[:top_k]
@@ -1145,7 +1145,7 @@ def retrieve(
 
         # ── Fuse results ──────────────────────────────────────────────────────
         fused = _fuse_ranked_lists(vector_chunks, keyword_chunks, symbol_chunks, top_k)
-        retrieval_cache.put(query, fused, repo_id=repo_id, filters=metadata_filter)
+        retrieval_cache.put(query, fused, repo_id=repo_id, filters=metadata_filter, top_k=top_k)
 
     if not fused and not dense_ok:
         # Every retriever came back empty *and* the dense one failed. That is
