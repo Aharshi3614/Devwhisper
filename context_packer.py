@@ -96,8 +96,9 @@ def pack_context(
             "chunks_truncated": 0,
         }
 
-    # Split by standard "Result N:" headers
-    chunk_pattern = re.compile(r"(?=Result \d+:)")
+    # Split by standard "Result N:" headers anchored at line starts so
+    # code containing that text mid-line does not fracture a chunk.
+    chunk_pattern = re.compile(r"(?m)(?=^Result \d+:)")
     raw_chunks = [c.strip() for c in chunk_pattern.split(context) if c.strip()]
     if not raw_chunks:
         raw_chunks = [context.strip()]
