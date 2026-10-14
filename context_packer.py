@@ -50,8 +50,15 @@ def compress_code_chunk(code: str, aggressive: bool = False) -> str:
             continue
 
         if aggressive:
-            # Strip standalone single-line comments in aggressive mode
-            if stripped.startswith(("#", "//")) and not stripped.startswith(("#!", "///")):
+            # Strip standalone single-line comments in aggressive mode,
+            # but keep C preprocessor directives which also start with #.
+            if stripped.startswith("#") and not stripped.startswith("#!"):
+                if not re.match(
+                    r"#\s*(include|define|pragma|ifdef|ifndef|endif|elif|else|if|error|warning|line|undef)\b",
+                    stripped,
+                ):
+                    continue
+            elif stripped.startswith("//") and not stripped.startswith("///"):
                 continue
 
         # Trim trailing whitespace
