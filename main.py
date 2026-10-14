@@ -287,10 +287,9 @@ def queue_worker():
                 if job["type"] == "upload":
                     temp_zip_path = job["temp_zip_path"]
 
-                    if os.path.exists(SAMPLE_CODEBASE_DIRECTORY):
-                        shutil.rmtree(SAMPLE_CODEBASE_DIRECTORY)
-                    os.makedirs(SAMPLE_CODEBASE_DIRECTORY, exist_ok=True)
-
+                    # No pre-wipe here: safe_extract_all() stages into a temp
+                    # sibling and only replaces the live tree on success, so a
+                    # failed upload leaves the current codebase intact.
                     try:
                         # extractall() decompresses every member in full. The
                         # declared sizes were checked at upload, but a ZIP may
