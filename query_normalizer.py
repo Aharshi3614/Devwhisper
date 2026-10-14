@@ -6,6 +6,23 @@ Standardizes user queries before semantic search by normalizing whitespace, punc
 import re
 import string
 
+#: Common English words that users often type in all caps. These keep the
+#: old lowercasing behaviour so shouting a question does not pollute symbol
+#: search. Anything else in all caps (RRF, BM25, API) is likely a code
+#: acronym and is preserved for the downstream symbol extractor, which
+#: requires uppercase to recognise it.
+_COMMON_UPPER_WORDS = frozenset({
+    "HOW", "WHAT", "WHERE", "WHY", "WHEN", "WHICH", "WHO", "WHOSE", "WHOM",
+    "IS", "ARE", "WAS", "WERE", "BE", "AM",
+    "DOES", "DO", "DID", "DONE",
+    "CAN", "COULD", "SHOULD", "WOULD", "WILL", "SHALL", "MAY", "MIGHT", "MUST",
+    "THE", "THIS", "THAT", "THESE", "THOSE",
+    "AND", "OR", "NOT", "BUT", "IF", "THEN", "ELSE",
+    "A", "AN", "IN", "ON", "AT", "TO", "FOR", "OF", "FROM", "WITH", "BY",
+    "IT", "ITS", "I", "WE", "YOU", "THEY", "HE", "SHE",
+    "SHOW", "TELL", "EXPLAIN", "FIND", "GIVE", "LIST", "GET", "MAKE", "USE",
+})
+
 class QueryNormalizer:
     """Normalizes raw natural language queries before retrieval pipeline processing."""
 
@@ -32,8 +49,14 @@ class QueryNormalizer:
         tokens = query.split(" ")
         normalized_tokens = []
         for token in tokens:
-            # Preserve camelCase, PascalCase, or snake_case identifiers
+            # Preserve camelCase, PascalCase, snake_case, and acronyms
+            # (RRF, BM25, API). The symbol extractor hunts for uppercase
+            # acronyms downstream, so lowercasing them here would hide
+            # exactly the terms it needs to find. Common English words
+            # typed in caps still normalize as before.
             if "_" in token or (not token.islower() and not token.isupper()):
+                normalized_tokens.append(token)
+            elif token.isupper() and len(token) > 1 and token not in _COMMON_UPPER_WORDS:
                 normalized_tokens.append(token)
             else:
                 normalized_tokens.append(token.lower())
