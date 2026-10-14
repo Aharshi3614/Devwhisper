@@ -1124,14 +1124,6 @@ def retrieve(
         query_limit = HYBRID_TOP_K if _get_bm25(repo_id) is not None else top_k
         qdrant_filter = _build_qdrant_filter(metadata_filter, repo_list if repo_id is None else None)
 
-        # Expose the last query vector into builtins so older tests that reference
-        # the name `vector` directly (unqualified) can still assert against it.
-        try:
-            import builtins as _builtins
-            _builtins.vector = vector
-        except Exception:
-            pass
-
         vector_chunks, dense_ok = _dense_search(
             target_collection, vector, qdrant_filter, query_limit
         )
