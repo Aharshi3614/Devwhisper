@@ -242,8 +242,14 @@ def safe_extract_all(
         UnsafeArchiveMember: If a member would be written outside
             *destination*.
     """
-    os.makedirs(destination, exist_ok=True)
-    root = os.path.realpath(destination)
+    # Extract into a temp sibling so a failed upload never wipes the live
+    # tree. The destination may hold the current indexed codebase, which no
+    # rejected archive should be able to delete.
+    staging = destination.rstrip(os.sep) + ".staging"
+    if os.path.exists(staging):
+        shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging, exist_ok=True)
+    staging_root = os.path.realpath(staging)
     written = 0
 
     try:
@@ -256,9 +262,9 @@ def safe_extract_all(
                     )
 
                 target = os.path.realpath(
-                    os.path.join(root, info.filename.replace("\\", "/"))
+                    os.path.join(staging_root, info.filename.replace("\\", "/"))
                 )
-                if target != root and not target.startswith(root + os.sep):
+                if target != staging_root and not target.startswith(staging_root + os.sep):
                     raise UnsafeArchiveMember(
                         f"Refusing to extract {info.filename!r}: it resolves "
                         "outside the extraction directory."
@@ -273,7 +279,15 @@ def safe_extract_all(
                     archive, info, target, max_extracted_bytes, written
                 )
     except Exception:
-        shutil.rmtree(destination, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    try:
+        if os.path.exists(destination):
+            shutil.rmtree(destination, ignore_errors=True)
+        os.replace(staging, destination)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
         raise
 
     return written
