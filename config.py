@@ -655,8 +655,8 @@ ENABLE_CONTEXT_COMPRESSION: Final = os.getenv("ENABLE_CONTEXT_COMPRESSION", "tru
 # Rate limiting and retrieval cache configuration
 _default_rate_limit_enabled = "false" if _in_testing else "true"
 RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", _default_rate_limit_enabled).lower() in ("true", "1", "yes")
-RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
-RATE_LIMIT_BURST: int = int(os.getenv("RATE_LIMIT_BURST", "10"))
+RATE_LIMIT_RPM: int = _env_int("RATE_LIMIT_RPM", 60, min_value=1)
+RATE_LIMIT_BURST: int = _env_int("RATE_LIMIT_BURST", 10, min_value=1)
 _exempt_paths_env = os.getenv("RATE_LIMIT_EXEMPT_PATHS")
 if _exempt_paths_env:
     RATE_LIMIT_EXEMPT_PATHS: set[str] = set(p.strip() for p in _exempt_paths_env.split(",") if p.strip())
