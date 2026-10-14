@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -10,6 +11,11 @@ from typing import Any
 
 
 SessionData = dict[str, Any]
+
+#: Maximum characters kept per imported history entry. Imports arrive in
+#: bulk from unauthenticated input, so a per item bound keeps one payload
+#: from pinning disproportionate memory.
+MAX_IMPORTED_ENTRY_CHARS = 20000
 
 
 class SessionManager:
@@ -102,12 +108,22 @@ class SessionManager:
         if not isinstance(raw_history, list):
             raw_history = []
 
-        history = [str(item) for item in raw_history]
+        history = []
+        for item in raw_history:
+            text = str(item)
+            if len(text) > MAX_IMPORTED_ENTRY_CHARS:
+                text = text[:MAX_IMPORTED_ENTRY_CHARS] + "...[truncated]"
+            history.append(text)
         overflow = len(history) - self.max_history_per_session
         if overflow > 0:
             history = history[overflow:]
 
-        last_used = float(session_data.get("last_used", self._clock()))
+        try:
+            last_used = float(session_data.get("last_used", self._clock()))
+        except (TypeError, ValueError):
+            raise ValueError("Session 'last_used' must be a finite number") from None
+        if not math.isfinite(last_used):
+            raise ValueError("Session 'last_used' must be a finite number")
 
         with self.lock:
             self.sessions[session_id] = {
