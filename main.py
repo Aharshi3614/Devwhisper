@@ -698,11 +698,13 @@ async def vapi_webhook(request: Request):
         assistant config, an acknowledgement, or an error.
     """
     body = await request.json()
-    logger.info("Incoming webhook payload: %s", body)
 
     message = body.get("message", {})
     msg_type = message.get("type", "")
     session_id = _get_session_id(message)
+
+    logger.info("Incoming webhook event type=%r session=%s", msg_type, session_id)
+    logger.debug("Incoming webhook payload: %s", body)
 
     # ── Assistant initialization ──────────────────────────────────────
     if msg_type == "assistant-request":
