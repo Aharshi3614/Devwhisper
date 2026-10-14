@@ -633,12 +633,17 @@ def validate_config() -> None:
 
     if errors:
         error_msg = (
-            "Invalid configuration detected — "
+            "Invalid configuration detected - "
             f"{len(errors)} problem(s) found:\n\n"
             + "\n".join(errors)
             + "\n\nSee .env.example for the full list of supported settings."
         )
-        raise ValueError(error_msg)
+        raise ConfigError(
+            setting="CONFIGURATION",
+            value=f"{len(errors)} invalid value(s)",
+            expected="valid values for all configuration settings",
+            fix=error_msg,
+        )
 
 
 # Run validation on import
