@@ -1139,16 +1139,21 @@ async def upload_codebase(file: UploadFile = File(...)):
         stats["ratio"],
     )
 
-    # Validate path traversal (Zip Slip) synchronously
+    # Validate path traversal (Zip Slip) synchronously. Uses the same
+    # predicate as extraction so both layers agree on backslash, drive,
+    # and empty name handling.
     is_path_traversal = False
     invalid_member = ""
-    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-        for member in zip_ref.namelist():
-            norm_path = os.path.normpath(member)
-            if norm_path.startswith("..") or os.path.isabs(norm_path):
-                is_path_traversal = True
-                invalid_member = member
-                break
+    try:
+        with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+            for member in zip_ref.namelist():
+                if not is_safe_member(member):
+                    is_path_traversal = True
+                    invalid_member = member
+                    break
+    except zipfile.BadZipFile:
+        _remove_temp_upload(temp_zip_path)
+        return error_response(400, "Invalid ZIP archive.")
 
     if is_path_traversal:
         _remove_temp_upload(temp_zip_path)
@@ -1156,11 +1161,15 @@ async def upload_codebase(file: UploadFile = File(...)):
 
     # Validate that ZIP contains supported files (.py, .md) synchronously
     has_supported_file = False
-    with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-        for member in zip_ref.namelist():
-            if not member.endswith("/") and member.lower().endswith((".py", ".md")):
-                has_supported_file = True
-                break
+    try:
+        with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+            for member in zip_ref.namelist():
+                if not member.endswith("/") and member.lower().endswith((".py", ".md")):
+                    has_supported_file = True
+                    break
+    except zipfile.BadZipFile:
+        _remove_temp_upload(temp_zip_path)
+        return error_response(400, "Invalid ZIP archive.")
 
     if not has_supported_file:
         _remove_temp_upload(temp_zip_path)
