@@ -1166,6 +1166,27 @@ def retrieve(
     for index, result in enumerate(fused):
 
         confidence = result.get("score")
+        if confidence is None:
+            bm25_score = result.get("bm25_score")
+            if bm25_score is not None:
+                try:
+                    confidence = max(0.0, min(1.0, float(bm25_score) / 10.0))
+                except (TypeError, ValueError):
+                    confidence = None
+        if confidence is None:
+            rrf_score = result.get("rrf_score")
+            if rrf_score is not None:
+                try:
+                    confidence = max(0.0, min(1.0, float(rrf_score) * 10.0))
+                except (TypeError, ValueError):
+                    confidence = None
+        if confidence is None:
+            match_count = result.get("exact_match_count")
+            if match_count is not None:
+                try:
+                    confidence = max(0.0, min(1.0, float(match_count) / 5.0))
+                except (TypeError, ValueError):
+                    confidence = None
 
         file = result.get("file", "unknown")
         repo = result.get("repository", "")
