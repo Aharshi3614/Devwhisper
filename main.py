@@ -1588,6 +1588,8 @@ def switch_repository_endpoint(payload: dict):
     repo_id = payload.get("repo_id")
     if not repo_id:
         return error_response(400, "repo_id is required")
+    if repositories.get_repo_path(repo_id) is None:
+        return error_response(404, f"Repository not found: {repo_id}")
     repositories.set_current_repo(repo_id)
 
     if not _is_indexed(repo_id):
