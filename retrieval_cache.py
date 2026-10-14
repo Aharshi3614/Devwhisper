@@ -139,11 +139,18 @@ class RetrievalCache:
         file_paths: Set[str] = set()
         for chunk in results:
             if isinstance(chunk, dict):
-                # Check various path keys
+                # Check various path keys. Chunks produced by the indexer
+                # and dense search carry "file", older payloads may use
+                # "file_path" or "path".
+                metadata = chunk.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
                 path = (
-                    chunk.get("file_path")
+                    chunk.get("file")
+                    or chunk.get("file_path")
                     or chunk.get("path")
-                    or chunk.get("metadata", {}).get("file_path")
+                    or metadata.get("file")
+                    or metadata.get("file_path")
                 )
                 if path:
                     file_paths.add(str(path).replace("\\", "/"))
