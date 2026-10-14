@@ -8,7 +8,7 @@ and modular webhook event handlers to decouple Vapi payload processing from main
 from logger import logger
 from cache import get as cache_get, put as cache_put
 from retriever import retrieve
-from llm import generate_response
+from llm import generate_response, LLM_ERROR_MESSAGE
 from fastapi.responses import JSONResponse
 from errors import error_response
 import json
@@ -63,10 +63,16 @@ def process_query_pipeline(query: str, session_id: str, memory_getter, memory_up
     if not answer:
         answer = generate_response(query, context, history)
 
-    if answer and answer.strip() and sources:
+    # Never cache generation failures or evidence-free answers. The error
+    # apology is non-empty, so a plain truthiness check would pin it in the
+    # LRU the same way main._persist_answer() already guards against.
+    is_failure = answer.strip().startswith(LLM_ERROR_MESSAGE.strip()[:20]) if answer and answer.strip() else False
+    has_context = bool(context and context.strip())
+
+    if answer and answer.strip() and sources and not is_failure:
         answer += "\n\n**Sources used:** " + ", ".join(f"`{s}`" for s in sources)
 
-    if answer and answer.strip():
+    if answer and answer.strip() and not is_failure and has_context:
         cache_put(query, answer)
     
     memory_updater(session_id, query, answer)
