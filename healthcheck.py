@@ -82,10 +82,16 @@ def check_llm() -> tuple[bool, str]:
             json=body,
             timeout=15,
         )
-        data = resp.json()
 
         if resp.status_code != 200:
-            return False, f"Groq API returned status {resp.status_code}: {data}"
+            snippet = resp.text[:300] if resp.text else "(empty body)"
+            return False, f"Groq API returned status {resp.status_code}: {snippet}"
+
+        try:
+            data = resp.json()
+        except ValueError:
+            snippet = resp.text[:300] if resp.text else "(empty body)"
+            return False, f"Unexpected non-JSON response from Groq API: {snippet}"
 
         if "choices" in data and len(data["choices"]) > 0:
             content = data["choices"][0]["message"]["content"].strip()
