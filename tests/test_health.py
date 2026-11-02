@@ -109,3 +109,46 @@ def test_healthcheck_get_diagnostics(monkeypatch):
     assert diag["status"] == "degraded"
     assert diag["subsystems"]["qdrant"]["healthy"] is False
     assert diag["subsystems"]["embedder"]["healthy"] is True
+
+
+def test_check_llm_handles_non_200_html_body(monkeypatch):
+    """Non-200 responses with non-JSON HTML bodies should report status and snippet (issue #355)."""
+    import healthcheck
+    import requests
+
+    class MockResponse:
+        status_code = 502
+        text = "<html><body>502 Bad Gateway</body></html>"
+
+        def json(self):
+            raise ValueError("No JSON object could be decoded")
+
+    monkeypatch.setattr(healthcheck, "GROQ_API_KEY", "mock-key")
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: MockResponse())
+
+    ok, msg = healthcheck.check_llm()
+    assert ok is False
+    assert "status 502" in msg
+    assert "502 Bad Gateway" in msg
+    assert "Could not reach" not in msg
+
+
+def test_check_llm_handles_200_invalid_json(monkeypatch):
+    """200 responses with invalid JSON bodies should report unexpected non-JSON response."""
+    import healthcheck
+    import requests
+
+    class MockResponse:
+        status_code = 200
+        text = "truncated or malformed"
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(healthcheck, "GROQ_API_KEY", "mock-key")
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: MockResponse())
+
+    ok, msg = healthcheck.check_llm()
+    assert ok is False
+    assert "Unexpected non-JSON response" in msg
+    assert "truncated or malformed" in msg
