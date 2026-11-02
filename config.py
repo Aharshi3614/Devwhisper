@@ -638,7 +638,12 @@ def validate_config() -> None:
             + "\n".join(errors)
             + "\n\nSee .env.example for the full list of supported settings."
         )
-        raise ValueError(error_msg)
+        raise ConfigError(
+            setting="config",
+            value=f"{len(errors)} problem(s)",
+            expected="all settings to satisfy validation constraints",
+            fix="\n".join(errors),
+        )
 
 
 # Run validation on import
