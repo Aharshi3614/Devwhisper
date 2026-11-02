@@ -271,6 +271,17 @@ class TestValidateConfigCollectsAllErrors:
         assert "Fix:" in msg
         assert "increase INDEX_CHUNK_SIZE" in msg or "decrease INDEX_CHUNK_OVERLAP" in msg
 
+    def test_validate_config_raises_config_error(self, monkeypatch):
+        """validate_config() should raise ConfigError directly (issue #361)."""
+        monkeypatch.setattr(config, "RETRIEVAL_TOP_K", 0)
+        with pytest.raises(ConfigError) as exc_info:
+            validate_config()
+        err = exc_info.value
+        assert isinstance(err, ValueError)
+        assert err.setting == "config"
+        assert "problem(s)" in str(err.value)
+        assert "RETRIEVAL_TOP_K" in err.fix
+
 
 # ---------------------------------------------------------------------------
 # Import-time validation — fail fast on bad config
