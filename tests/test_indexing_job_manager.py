@@ -1,5 +1,7 @@
 """tests/test_indexing_job_manager.py — Unit and integration tests for indexing job manager."""
 
+import queue
+import threading
 import time
 import pytest
 from fastapi.testclient import TestClient
@@ -87,3 +89,80 @@ def test_indexing_jobs_api_endpoints(monkeypatch):
     # 404 for unknown job
     res_404 = client.get("/index/jobs/nonexistent-id")
     assert res_404.status_code == 404
+
+
+def _run_worker_until_stopped(queue_obj):
+    """Run queue_worker for the jobs already queued, then stop it."""
+    import main
+
+    worker = threading.Thread(target=main.queue_worker, daemon=True)
+    worker.start()
+    queue_obj.put(None)
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "queue_worker did not stop"
+
+
+def test_worker_skips_job_cancelled_before_start(monkeypatch):
+    """A job cancelled while queued must not run or stay active."""
+    import main
+    from indexing_job_manager import job_manager
+
+    work_queue = queue.Queue()
+    indexed = []
+    monkeypatch.setattr(main, "indexing_queue", work_queue)
+    monkeypatch.setattr(main, "index_directory", lambda *a, **k: indexed.append(1))
+    monkeypatch.setattr(main, "invalidate_repo_caches", lambda *a, **k: None)
+
+    job = job_manager.create_job(repo_id="cancelled-before-start")
+    assert job_manager.cancel_job(job.id) is True
+
+    record = {
+        "id": job.id,
+        "type": "reindex",
+        "name": "Cancelled before start",
+        "repo_id": "cancelled-before-start",
+        "dry_run": False,
+        "job_instance": job,
+    }
+    work_queue.put(record)
+    _run_worker_until_stopped(work_queue)
+
+    assert indexed == [], "cancelled job must not start index_directory()"
+    assert record["status"] == "cancelled"
+    assert job.status == JobStatus.CANCELLED
+    assert job_manager.get_active_job_for_repo("cancelled-before-start") is None
+
+
+def test_worker_releases_job_cancelled_during_run(monkeypatch):
+    """A cancellation that arrives mid-run must be written back to the job."""
+    import main
+    from indexing_job_manager import job_manager
+
+    work_queue = queue.Queue()
+    monkeypatch.setattr(main, "indexing_queue", work_queue)
+    monkeypatch.setattr(main, "invalidate_repo_caches", lambda *a, **k: None)
+
+    job = job_manager.create_job(repo_id="cancelled-during-run")
+    record = {
+        "id": job.id,
+        "type": "reindex",
+        "name": "Cancelled during run",
+        "repo_id": "cancelled-during-run",
+        "dry_run": False,
+        "job_instance": job,
+    }
+
+    def cancel_during_index(*args, **kwargs):
+        # Simulates index_directory() observing the cancellation event and
+        # returning early after the user has cancelled the job.
+        job_manager.cancel_job(job.id)
+        return None
+
+    monkeypatch.setattr(main, "index_directory", cancel_during_index)
+
+    work_queue.put(record)
+    _run_worker_until_stopped(work_queue)
+
+    assert record["status"] == "cancelled"
+    assert job.status == JobStatus.CANCELLED
+    assert job_manager.get_active_job_for_repo("cancelled-during-run") is None

@@ -262,14 +262,35 @@ def queue_worker():
                 break
 
             job_id = job["id"]
+            job_inst = job.get("job_instance")
+
+            # A job can be cancelled between /index/jobs/start and this
+            # dequeue. Honour that before touching the filesystem: the upload
+            # branch below deletes and re-extracts sample_codebase, and
+            # starting index_directory() would undo the cancellation.
+            if job_inst and job_inst.is_cancelled():
+                job["status"] = "cancelled"
+                job["message"] = "Job cancelled before it started."
+                job["finished_at"] = time.time()
+                if job["type"] == "upload" and job.get("temp_zip_path"):
+                    _remove_temp_upload(job["temp_zip_path"])
+                if job_inst.finished_at is None:
+                    job_inst.finished_at = job["finished_at"]
+                progress_state.update({
+                    "running": False,
+                    "status": "cancelled",
+                    "message": job["message"],
+                })
+                indexing_queue.task_done()
+                continue
+
             job["status"] = "running"
             job["started_at"] = time.time()
             job["message"] = f"Indexing {job['name']}..."
-            job_inst = job.get("job_instance")
             if job_inst:
                 job_inst.status = JobStatus.RUNNING
-                job_inst.started_at = time.time()
-                job_inst.message = f"Indexing {job['name']}..."
+                job_inst.started_at = job["started_at"]
+                job_inst.message = job["message"]
 
             progress_state.update({
                 "running": True,
@@ -337,6 +358,21 @@ def queue_worker():
                 if job_inst and job_inst.is_cancelled():
                     job["status"] = "cancelled"
                     job["message"] = "Job was cancelled."
+                    # The job instance is the manager's view of the job. It
+                    # was moved to RUNNING above, so a cancellation that
+                    # arrived during the run must be written back here or
+                    # /index/jobs keeps reporting "running" and
+                    # get_active_job_for_repo() never releases the repo.
+                    job_inst.status = JobStatus.CANCELLED
+                    job_inst.message = job["message"]
+                    if job_inst.finished_at is None:
+                        job_inst.finished_at = time.time()
+
+                    progress_state.update({
+                        "running": False,
+                        "status": "cancelled",
+                        "message": job["message"],
+                    })
                 else:
                     job["status"] = "completed"
                     job["percent"] = 100
@@ -346,12 +382,12 @@ def queue_worker():
                         job_inst.percent = 100
                         job_inst.message = "Indexing completed successfully."
 
-                progress_state.update({
-                    "running": False,
-                    "status": "done" if not (job_inst and job_inst.is_cancelled()) else "cancelled",
-                    "percent": 100 if not (job_inst and job_inst.is_cancelled()) else progress_state.get("percent", 0),
-                    "message": job["message"],
-                })
+                    progress_state.update({
+                        "running": False,
+                        "status": "done",
+                        "percent": 100,
+                        "message": job["message"],
+                    })
             except Exception as e:
                 logger.error("Job %s failed: %s", job_id, e)
                 job["status"] = "failed"
